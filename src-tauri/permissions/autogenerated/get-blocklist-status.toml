@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-blocklist-status"
+description = "Enables the get_blocklist_status command without any pre-configured scope."
+commands.allow = ["get_blocklist_status"]
+
+[[permission]]
+identifier = "deny-get-blocklist-status"
+description = "Denies the get_blocklist_status command without any pre-configured scope."
+commands.deny = ["get_blocklist_status"]

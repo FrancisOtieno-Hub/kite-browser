@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-download-in-folder"
+description = "Enables the show_download_in_folder command without any pre-configured scope."
+commands.allow = ["show_download_in_folder"]
+
+[[permission]]
+identifier = "deny-show-download-in-folder"
+description = "Denies the show_download_in_folder command without any pre-configured scope."
+commands.deny = ["show_download_in_folder"]

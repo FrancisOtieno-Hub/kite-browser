@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-vault-dismiss-login"
+description = "Enables the vault_dismiss_login command without any pre-configured scope."
+commands.allow = ["vault_dismiss_login"]
+
+[[permission]]
+identifier = "deny-vault-dismiss-login"
+description = "Denies the vault_dismiss_login command without any pre-configured scope."
+commands.deny = ["vault_dismiss_login"]

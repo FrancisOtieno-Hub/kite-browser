@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hide-library"
+description = "Enables the hide_library command without any pre-configured scope."
+commands.allow = ["hide_library"]
+
+[[permission]]
+identifier = "deny-hide-library"
+description = "Denies the hide_library command without any pre-configured scope."
+commands.deny = ["hide_library"]

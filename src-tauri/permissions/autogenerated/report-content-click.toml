@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-content-click"
+description = "Enables the report_content_click command without any pre-configured scope."
+commands.allow = ["report_content_click"]
+
+[[permission]]
+identifier = "deny-report-content-click"
+description = "Denies the report_content_click command without any pre-configured scope."
+commands.deny = ["report_content_click"]

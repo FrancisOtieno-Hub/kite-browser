@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-context-menu"
+description = "Enables the report_context_menu command without any pre-configured scope."
+commands.allow = ["report_context_menu"]
+
+[[permission]]
+identifier = "deny-report-context-menu"
+description = "Denies the report_context_menu command without any pre-configured scope."
+commands.deny = ["report_context_menu"]

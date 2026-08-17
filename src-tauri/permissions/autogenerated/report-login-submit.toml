@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-login-submit"
+description = "Enables the report_login_submit command without any pre-configured scope."
+commands.allow = ["report_login_submit"]
+
+[[permission]]
+identifier = "deny-report-login-submit"
+description = "Denies the report_login_submit command without any pre-configured scope."
+commands.deny = ["report_login_submit"]

@@ -1,0 +1,9 @@
+# Automatically generated - DO NOT EDIT!
+[[permission]]
+identifier = "allow-toggle-find-in-page"
+description = "Enables the toggle_find_in_page command without any pre-configured scope."
+commands.allow = ["toggle_find_in_page"]
+[[permission]]
+identifier = "deny-toggle-find-in-page"
+description = "Denies the toggle_find_in_page command without any pre-configured scope."
+commands.deny = ["toggle_find_in_page"]

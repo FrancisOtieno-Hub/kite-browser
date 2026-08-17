@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-vault-autofill"
+description = "Enables the vault_autofill command without any pre-configured scope."
+commands.allow = ["vault_autofill"]
+
+[[permission]]
+identifier = "deny-vault-autofill"
+description = "Denies the vault_autofill command without any pre-configured scope."
+commands.deny = ["vault_autofill"]

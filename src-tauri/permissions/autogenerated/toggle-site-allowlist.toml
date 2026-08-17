@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toggle-site-allowlist"
+description = "Enables the toggle_site_allowlist command without any pre-configured scope."
+commands.allow = ["toggle_site_allowlist"]
+
+[[permission]]
+identifier = "deny-toggle-site-allowlist"
+description = "Denies the toggle_site_allowlist command without any pre-configured scope."
+commands.deny = ["toggle_site_allowlist"]
