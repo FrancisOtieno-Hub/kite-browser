@@ -1,0 +1,68 @@
+[package]
+name = "kite-browser"
+version = "0.1.0"
+description = "Kite - a fast, low-memory browser shell"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2.5"
+# Added for the image context-menu actions (Save Image As.../Copy Image):
+# reqwest fetches the right-clicked <img>'s bytes (the WebView2 on_download
+# hook above only fires for real browser-initiated downloads, not our own
+# custom context menu), image decodes them to raw RGBA for the clipboard,
+# and base64 covers inline data: URI images (common for small/lazy-loaded
+# thumbnails) without a network round-trip.
+reqwest = { version = "0.12", features = ["blocking"] }
+image = "0.25"
+base64 = "0.22"
+# Password vault (see main.rs's Vault* items): argon2 derives a 256-bit key
+# from the user's master password + a random per-vault salt; aes-gcm
+# encrypts everything at rest with that key (AEAD - tampering with
+# ciphertext fails to decrypt rather than silently decrypting garbage,
+# which is also how vault_unlock verifies a password is *correct* without
+# ever storing the password or key itself). rand supplies the salt/nonce
+# randomness; zeroize wipes the derived key from memory on vault_lock and
+# on process exit rather than leaving it sitting in a freed heap page.
+argon2 = "0.5"
+aes-gcm = "0.10"
+rand = "0.8"
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Threading",
+] }
+# Only for watch_for_crash's ProcessFailed hookup (see its doc comment).
+# MUST resolve to the exact same webview2-com-sys version Tauri's own
+# wry already uses internally (confirmed via build log: 0.38.2) - a
+# looser/different version here pulls a second, separate copy of
+# webview2-com-sys into the dependency graph, which is exactly what went
+# wrong in round 3: the handler this file builds and the ICoreWebView2
+# Tauri hands to with_webview() ended up as two different, incompatible
+# types that just happen to share a name. If this version drifts from
+# wry's again on some future `cargo update`, `cargo tree -i
+# webview2-com-sys` will show two entries instead of one.
+webview2-com = "0.38"
+
+# "unstable" enables the multiwebview APIs (create_webview / set_position /
+# set_size on an existing window) that we use to render page content in a
+# separate webview from the browser chrome (address bar, buttons).
+#
+# tauri-plugin-global-shortcut registers OS-level hotkeys, so our
+# shortcuts (Ctrl+T, Ctrl+W, etc.) fire no matter which of Kite's
+# webviews - chrome or a page's own content - currently has keyboard
+# focus. We guard the handler to only act while Kite's window is
+# focused, since a true OS-global hotkey would otherwise also fire
+# while some other application is in front.
