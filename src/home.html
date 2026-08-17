@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kite</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@1,500;1,600&family=Inter:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="home.css" />
+</head>
+<body>
+  <main class="home">
+    <div class="brand">
+      <img class="kite-mark" src="logo.png" alt="Kite" />
+      <p class="tagline">Light. Fast. Free.</p>
+    </div>
+
+    <svg class="kite-string" viewBox="0 0 4 56" aria-hidden="true">
+      <path d="M2 0 C 8 14, -4 28, 2 42 C 6 50, 0 50, 2 56" />
+    </svg>
+
+    <form id="home-search-form" class="search-form">
+      <input
+        id="home-search-input"
+        class="search-input"
+        type="text"
+        placeholder="Search or enter address"
+        autocomplete="off"
+        spellcheck="false"
+        autofocus
+      />
+    </form>
+  </main>
+
+  <script src="home.js"></script>
+</body>
+</html>

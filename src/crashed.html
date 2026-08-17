@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Page crashed</title>
+  <style>
+    :root {
+      --crashed-bg: #f6f3ee;
+      --crashed-text: #16213a;
+      --crashed-muted: #6b7690;
+      --crashed-accent: #3a7afe;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--crashed-bg);
+      color: var(--crashed-text);
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .crashed {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      max-width: 380px;
+      padding: 24px;
+      text-align: center;
+    }
+    .crashed-icon {
+      width: 48px;
+      height: 48px;
+      opacity: 0.55;
+    }
+    h1 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 600;
+    }
+    p {
+      margin: 0;
+      font-size: 13.5px;
+      line-height: 1.5;
+      color: var(--crashed-muted);
+    }
+    button {
+      margin-top: 6px;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 22px;
+      background: var(--crashed-accent);
+      color: #fff;
+      font-size: 13.5px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.12s ease;
+    }
+    button:hover {
+      background: #2f68e0;
+    }
+  </style>
+</head>
+<body>
+  <div class="crashed">
+    <img class="crashed-icon" src="logo.png" alt="" />
+    <h1>This page stopped working</h1>
+    <p>Something went wrong loading this page. Reloading it usually fixes this.</p>
+    <button id="reload-btn">Reload</button>
+  </div>
+
+  <script>
+    // Runs inside a content-tab webview, same as home.html - per
+    // capabilities/content.json, content tabs get zero Tauri IPC access
+    // by design, so this can't invoke() to ask Rust what to reload. The
+    // Rust side pushes the crashed tab's real URL in directly via
+    // webview.eval() right after navigating here (see
+    // push_crashed_url_to_page in main.rs) - handle both orderings the
+    // same way home.js does for its own pushed-in data, since this
+    // script may run before or after that eval lands.
+    function reload() {
+      if (window.__KITE_CRASHED_URL__) {
+        window.location.href = window.__KITE_CRASHED_URL__;
+      }
+    }
+    document.getElementById("reload-btn").addEventListener("click", reload);
+  </script>
+</body>
+</html>

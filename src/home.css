@@ -1,0 +1,133 @@
+:root {
+  --home-text: #16213a;
+  --home-text-muted: #435170;
+  --home-accent: #e8a33d;
+  --home-accent-deep: #c97f1f;
+  --home-focus: #3a7afe; /* matches the toolbar address bar's focus color */
+  --home-tile-bg: rgba(255, 255, 255, 0.72);
+  --home-tile-border: rgba(22, 33, 58, 0.1);
+  --home-fallback-bg: #dce8f2; /* shows briefly before home-background.jpg loads */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  color: var(--home-text);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-y: auto;
+}
+
+.home {
+  position: relative;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14vh 24px 48px;
+  background-color: var(--home-fallback-bg);
+  background-image: url("home-background.jpg");
+  background-size: cover;
+  background-position: center;
+}
+
+/* --- Brand --- */
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.kite-mark {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  animation: kite-sway 6s ease-in-out infinite;
+  transform-origin: 50% 82%;
+  filter: drop-shadow(0 2px 6px rgba(22, 33, 58, 0.18));
+}
+
+@keyframes kite-sway {
+  0%,
+  100% {
+    transform: rotate(-4deg);
+  }
+  50% {
+    transform: rotate(4deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kite-mark {
+    animation: none;
+  }
+}
+
+.tagline {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--home-text-muted);
+}
+
+/* --- Kite string: the tether from brand down to the search bar --- */
+
+.kite-string {
+  width: 4px;
+  height: 44px;
+  margin: 10px 0 2px;
+  overflow: visible;
+}
+
+.kite-string path {
+  fill: none;
+  stroke: var(--home-accent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 2.5 6;
+  opacity: 0.75;
+}
+
+/* --- Search --- */
+
+.search-form {
+  width: 100%;
+  max-width: 560px;
+  margin-top: 4px;
+}
+
+.search-input {
+  width: 100%;
+  height: 52px;
+  padding: 0 20px;
+  border: 1px solid var(--home-tile-border);
+  border-radius: 26px;
+  background: var(--home-tile-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  color: var(--home-text);
+  font-family: "Inter", sans-serif;
+  font-size: 16px;
+  outline: none;
+  box-shadow: 0 1px 2px rgba(22, 33, 58, 0.06), 0 8px 24px rgba(22, 33, 58, 0.1);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.search-input::placeholder {
+  color: var(--home-text-muted);
+}
+
+.search-input:focus {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: var(--home-focus);
+  box-shadow: 0 0 0 3px rgba(58, 122, 254, 0.18), 0 8px 24px rgba(22, 33, 58, 0.1);
+}

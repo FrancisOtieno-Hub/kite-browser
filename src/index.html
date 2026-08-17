@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kite</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="chrome">
+    <div class="tab-bar" id="tab-bar" data-tauri-drag-region>
+      <button id="new-tab-btn" class="new-tab-btn" title="New tab (Ctrl+T)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+    </div>
+
+    <div class="toolbar">
+      <button id="back-btn" class="nav-btn" title="Back (Alt+Left)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <button id="forward-btn" class="nav-btn" title="Forward (Alt+Right)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <button id="reload-btn" class="nav-btn" title="Reload (Ctrl+R)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+      </button>
+      <button id="home-btn" class="nav-btn" title="Home (Alt+Home)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg>
+      </button>
+
+      <form id="address-form" class="address-form">
+        <input
+          id="address-input"
+          class="address-input"
+          type="text"
+          placeholder="Search or enter address"
+          title="Focus address bar (Ctrl+L)"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </form>
+
+      <div class="zoom-controls" id="zoom-controls">
+        <button id="zoom-out-btn" class="nav-btn" title="Zoom out (Ctrl+-)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <span id="zoom-level" class="zoom-level" title="Reset zoom (Ctrl+0)">100%</span>
+        <button id="zoom-in-btn" class="nav-btn" title="Zoom in (Ctrl+=)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+      </div>
+
+      <button type="button" class="shield-badge" id="shield-badge" title="No trackers blocked on this page">
+        <svg class="shield-icon shield-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V6z"/></svg>
+        <svg class="shield-icon shield-icon-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V6z"/><line x1="4" y1="4" x2="20" y2="20"/></svg>
+        <span id="shield-count">0</span>
+      </button>
+
+      <button id="star-btn" class="nav-btn star-btn" title="Bookmark this page (Ctrl+D)">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2.8l3.06 6.63 7.14.85-5.36 4.97 1.46 7.15L12 18.24l-6.3 3.16 1.46-7.15-5.36-4.97 7.14-.85z"/></svg>
+      </button>
+      <button id="library-btn" class="nav-btn" title="History &amp; bookmarks (Ctrl+H)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+      </button>
+    </div>
+
+    <!-- Persistent bar, always visible just under the toolbar - not part
+         of the library panel, and not the old home-page quick-links grid
+         (removed from home.html/home.css/home.js), so it shows on every
+         page instead of only kite://home. Rust-side positioning of the
+         actual page content webviews accounts for this row's height too
+         (see CHROME_HEIGHT in main.rs) - it isn't hidden/shown based on
+         whether there are any bookmarks, to keep that geometry static. -->
+    <div class="bookmarks-bar" id="bookmarks-bar">
+      <p class="bookmarks-bar-empty" id="bookmarks-bar-empty">Star a page to bookmark it here.</p>
+      <div class="bookmarks-bar-list" id="bookmarks-bar-list"></div>
+
+      <!-- Shares the bookmarks bar's own fixed-height row instead of
+           adding a new one - see the comment on .login-save-prompt in
+           styles.css for why: this browser positions content webviews
+           based on a fixed chrome height, so a prompt that changed that
+           height on the fly would mean repositioning the active tab's
+           webview every time it showed or hid. login-save-prompt and
+           autofill-prompt below share this same row (never shown
+           together - see updateTabPromptVisibility in main.js), toggled
+           via .login-prompt-active / .autofill-prompt-active on the
+           bookmarks-bar element itself, which is what hides
+           bookmarks-bar-list/-empty and reveals whichever prompt applies. -->
+      <div class="login-save-prompt" id="login-save-prompt">
+        <span class="login-save-prompt-text" id="login-save-prompt-text"></span>
+        <span class="login-save-prompt-error" id="login-save-prompt-error"></span>
+        <div class="login-save-prompt-actions" id="login-save-prompt-actions">
+          <button type="button" class="login-save-prompt-btn login-save-prompt-save" id="login-save-prompt-save-btn">Save</button>
+          <button type="button" class="login-save-prompt-btn login-save-prompt-dismiss" id="login-save-prompt-dismiss-btn">Not now</button>
+          <button type="button" class="login-save-prompt-close" id="login-save-prompt-close-btn" title="Dismiss" aria-label="Dismiss">&times;</button>
+        </div>
+        <!-- Swapped in for the row above when Save is clicked while the
+             vault happens to be locked - lets saving succeed without a
+             separate trip to Passwords to unlock first. See
+             vault_unlock_and_save_login's own comment in main.rs. -->
+        <form class="login-save-prompt-unlock" id="login-save-prompt-unlock" hidden>
+          <input type="password" id="login-save-prompt-password" class="settings-text-input login-save-prompt-password-input" placeholder="Master password" autocomplete="current-password" />
+          <button type="submit" class="login-save-prompt-btn login-save-prompt-save">Unlock &amp; Save</button>
+          <button type="button" class="login-save-prompt-btn login-save-prompt-dismiss" id="login-save-prompt-unlock-cancel-btn">Cancel</button>
+        </form>
+      </div>
+
+      <!-- Offered on page load when the (already-unlocked) vault has a
+           saved login for the current host - see report_login_form_present
+           in main.rs. Never prompts to unlock the way the save prompt
+           does; autofill just stays silent on a locked vault. -->
+      <div class="login-save-prompt" id="autofill-prompt">
+        <span class="login-save-prompt-text" id="autofill-prompt-text"></span>
+        <select id="autofill-prompt-select" class="autofill-prompt-select" hidden></select>
+        <span class="login-save-prompt-error" id="autofill-prompt-error"></span>
+        <div class="login-save-prompt-actions">
+          <button type="button" class="login-save-prompt-btn login-save-prompt-save" id="autofill-prompt-fill-btn">Fill</button>
+          <button type="button" class="login-save-prompt-btn login-save-prompt-dismiss" id="autofill-prompt-dismiss-btn">Not now</button>
+          <button type="button" class="login-save-prompt-close" id="autofill-prompt-close-btn" title="Dismiss" aria-label="Dismiss">&times;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Library panel: the Rust side still resizes this chrome webview to
+         fill the window while this is open (parking the active tab
+         off-screen), but the tab bar and toolbar stay visible above it -
+         this needs to be a real flex child of .chrome (not a sibling of
+         it) for that column layout to actually apply - the panel fills
+         only the remaining space below them, one view at a time. -->
+    <div class="library" id="library">
+      <div class="library-header">
+        <button id="library-back-btn" class="nav-btn" title="Back to browsing">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <div class="library-switch">
+          <button id="show-history-btn" class="library-switch-btn active">History</button>
+          <button id="show-bookmarks-btn" class="library-switch-btn">Bookmarks</button>
+          <button id="show-downloads-btn" class="library-switch-btn">Downloads</button>
+          <button id="show-passwords-btn" class="library-switch-btn">Passwords</button>
+          <button id="show-settings-btn" class="library-switch-btn">Settings</button>
+        </div>
+        <button id="clear-history-btn" class="library-clear-btn" title="Clear all history">Clear all</button>
+      </div>
+
+      <div class="library-view active" id="history-view">
+        <ul class="library-list" id="history-list"></ul>
+        <p class="library-empty" id="history-empty">No history yet.</p>
+      </div>
+
+      <div class="library-view" id="bookmarks-view">
+        <ul class="library-list" id="bookmarks-list"></ul>
+        <p class="library-empty" id="bookmarks-empty">No bookmarks yet.</p>
+      </div>
+
+      <div class="library-view" id="downloads-view">
+        <ul class="library-list" id="downloads-list"></ul>
+        <p class="library-empty" id="downloads-empty">No downloads yet.</p>
+      </div>
+
+      <div class="library-view" id="passwords-view">
+        <div class="settings-panel">
+          <!-- Shown when no vault has ever been created on this machine. -->
+          <section class="settings-section vault-state" id="vault-setup-state">
+            <h3 class="settings-section-title">Create a master password</h3>
+            <p class="settings-section-desc">
+              This unlocks your saved logins. It's never sent anywhere and
+              can't be recovered if you forget it &mdash; there's no reset,
+              by design.
+            </p>
+            <form id="vault-create-form" class="vault-form">
+              <input type="password" id="vault-create-password" class="settings-text-input" placeholder="Master password (8+ characters)" autocomplete="new-password" />
+              <input type="password" id="vault-create-confirm" class="settings-text-input" placeholder="Confirm master password" autocomplete="new-password" />
+              <p class="vault-error" id="vault-create-error"></p>
+              <button type="submit" class="library-item-action vault-submit-btn">Create vault</button>
+            </form>
+          </section>
+
+          <!-- Shown when a vault exists but hasn't been unlocked this session. -->
+          <section class="settings-section vault-state" id="vault-unlock-state">
+            <h3 class="settings-section-title">Vault locked</h3>
+            <p class="settings-section-desc">Enter your master password to view saved logins.</p>
+            <form id="vault-unlock-form" class="vault-form">
+              <input type="password" id="vault-unlock-password" class="settings-text-input" placeholder="Master password" autocomplete="current-password" />
+              <p class="vault-error" id="vault-unlock-error"></p>
+              <button type="submit" class="library-item-action vault-submit-btn">Unlock</button>
+            </form>
+          </section>
+
+          <!-- Shown once unlocked. Autofill is a later phase; this covers
+               viewing/revealing/copying/deleting what's already saved. -->
+          <section class="settings-section vault-state" id="vault-unlocked-state">
+            <div class="library-header-row">
+              <h3 class="settings-section-title">Saved logins</h3>
+              <button id="vault-lock-btn" class="library-item-action">Lock vault</button>
+            </div>
+            <p class="library-empty" id="vault-logins-empty">No saved logins yet - they'll show up here once you save one from the prompt after logging into a site.</p>
+            <ul class="library-list" id="vault-logins-list"></ul>
+          </section>
+        </div>
+      </div>
+
+      <div class="library-view" id="settings-view">
+        <div class="settings-panel">
+          <section class="settings-section">
+            <h3 class="settings-section-title">Search engine</h3>
+            <p class="settings-section-desc">Used when you type a search term into the address bar.</p>
+            <select id="settings-search-engine" class="settings-select">
+              <option value="google">Google</option>
+              <option value="bing">Bing</option>
+              <option value="duckduckgo">DuckDuckGo</option>
+            </select>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">Startup</h3>
+            <p class="settings-section-desc">What new tabs and Kite's start page show.</p>
+            <div class="settings-radio-group">
+              <label class="settings-radio">
+                <input type="radio" name="settings-homepage-mode" value="home" checked />
+                Kite home page
+              </label>
+              <label class="settings-radio">
+                <input type="radio" name="settings-homepage-mode" value="custom" />
+                A specific page:
+                <input type="text" id="settings-homepage-url" class="settings-text-input" placeholder="https://example.com" disabled />
+              </label>
+              <label class="settings-radio">
+                <input type="radio" name="settings-homepage-mode" value="blank" />
+                Blank page
+              </label>
+              <label class="settings-radio">
+                <input type="radio" name="settings-homepage-mode" value="restore" />
+                Continue where you left off
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">Downloads</h3>
+            <p class="settings-section-desc">Where files are saved.</p>
+            <div class="settings-path-row">
+              <input type="text" id="settings-downloads-path" class="settings-text-input" readonly placeholder="Default Downloads folder" />
+              <button id="settings-choose-downloads-btn" class="library-item-action">Change&hellip;</button>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">Content blocking</h3>
+            <p class="settings-section-desc">Blocks known ad and tracker requests before they load.</p>
+            <label class="settings-radio">
+              <input type="checkbox" id="settings-content-blocking" />
+              Block ads &amp; trackers
+            </label>
+            <div class="settings-path-row settings-blocklist-row">
+              <span id="settings-blocklist-status" class="settings-status-text">Checking blocklist status&hellip;</span>
+              <button id="settings-refresh-blocklist-btn" class="library-item-action">Check for updates</button>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">Clear browsing data</h3>
+            <p class="settings-section-desc">Removes history and download records. Bookmarks are kept.</p>
+            <button id="settings-clear-data-btn" class="library-clear-btn">Clear browsing data</button>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

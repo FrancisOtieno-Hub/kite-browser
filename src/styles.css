@@ -1,0 +1,1076 @@
+:root {
+  --toolbar-bg: #f6f7fb;
+  --tab-bar-bg: #e3e7f1;
+  --toolbar-border: rgba(22, 33, 58, 0.1);
+  --btn-hover: rgba(22, 33, 58, 0.07);
+  --tab-bg: rgba(255, 255, 255, 0.45);
+  --tab-active-bg: #ffffff;
+  --text: #16213a;
+  --muted: #6b7690;
+  --accent: #3a7afe; /* focus / interactive - matches address bar focus ring */
+  --kite-accent: #e8a33d; /* brand amber - matches Kite's home page mark */
+  --kite-accent-deep: #c97f1f;
+  --danger: #d64545;
+  /* Private/incognito - a deliberately different hue family (indigo/
+     violet) from the amber brand accent above, so a private tab (and the
+     toolbar tint when it's active) reads as "different mode", not just
+     "different tab". */
+  --private-bg: #2a2438;
+  --private-bg-active: #382f4a;
+  --private-text: #e8e3f5;
+  --private-accent: #a78bfa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  overflow: hidden;
+}
+
+.chrome {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* --- Tab bar --- */
+
+.tab-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 40px;
+  padding: 6px 10px 0;
+  background: var(--tab-bar-bg);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  min-width: 110px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border-radius: 10px 10px 0 0;
+  background: var(--tab-bg);
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tab-favicon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.tab-private-badge {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--text);
+}
+
+.tab.active {
+  background: var(--tab-active-bg);
+  color: var(--text);
+  box-shadow: 0 -2px 8px rgba(22, 33, 58, 0.08);
+}
+
+/* Deliberately overrides .tab/.tab:hover/.tab.active's colors rather than
+   layering on top - a private tab should read as a different mode at a
+   glance, not a tinted variant of a regular one. */
+.tab.private {
+  background: var(--private-bg);
+  color: var(--private-text);
+}
+
+.tab.private:hover {
+  background: var(--private-bg-active);
+  color: var(--private-text);
+}
+
+.tab.private.active {
+  background: var(--private-bg-active);
+  color: var(--private-text);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.tab.private.active::before {
+  background: var(--private-accent);
+}
+
+/* Signature detail: a short amber tether on the active tab, echoing the
+   kite-string accent on the home page - ties the chrome back to the
+   brand mark instead of a generic underline. */
+.tab.active::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 14px;
+  right: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--kite-accent);
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab.active .tab-title {
+  font-weight: 600;
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  flex-shrink: 0;
+  transition: background 0.12s ease, opacity 0.12s ease, color 0.12s ease;
+}
+
+.tab-close:hover {
+  background: rgba(22, 33, 58, 0.12);
+  color: var(--danger);
+  opacity: 1;
+}
+
+.new-tab-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  align-self: center;
+  margin-left: 2px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.new-tab-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.new-tab-btn:hover {
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--text);
+}
+
+/* --- Toolbar --- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 54px;
+  padding: 0 14px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--toolbar-border);
+  flex-shrink: 0;
+}
+
+/* Tints the toolbar/address bar/bookmarks bar whenever the tab currently
+   on screen is private (see the body.private-active toggle in
+   renderTabs) - a persistent "you're in private mode" signal for as long
+   as you're actually using that tab, not just a marker on the tab strip
+   itself. Grouped here as one block (rather than folded into each
+   individual rule above/below) so the whole private-mode treatment is
+   easy to find and adjust in one place. */
+body.private-active .toolbar,
+body.private-active .bookmarks-bar {
+  background: var(--private-bg);
+  border-bottom-color: rgba(167, 139, 250, 0.2);
+}
+
+body.private-active .nav-btn {
+  color: rgba(232, 227, 245, 0.75);
+}
+
+body.private-active .nav-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--private-text);
+}
+
+body.private-active .address-input {
+  background: var(--private-bg-active);
+  color: var(--private-text);
+  border-color: rgba(167, 139, 250, 0.25);
+}
+
+body.private-active .address-input::placeholder {
+  color: rgba(232, 227, 245, 0.5);
+}
+
+body.private-active .address-input:focus {
+  background: var(--private-bg-active);
+  border-color: var(--private-accent);
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.22);
+}
+
+body.private-active .zoom-controls {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.private-active .zoom-level {
+  color: rgba(232, 227, 245, 0.75);
+}
+
+body.private-active .shield-badge {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(232, 227, 245, 0.75);
+}
+
+body.private-active .zoom-level:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--private-text);
+}
+
+body.private-active .star-btn {
+  color: rgba(232, 227, 245, 0.75);
+}
+
+body.private-active .bookmarks-bar-item {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(232, 227, 245, 0.8);
+}
+
+body.private-active .bookmarks-bar-item:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--private-text);
+}
+
+body.private-active .bookmarks-bar-empty {
+  color: rgba(232, 227, 245, 0.55);
+}
+
+.nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.nav-btn svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+.nav-btn:hover {
+  background: var(--btn-hover);
+  color: var(--text);
+}
+
+.nav-btn:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.nav-btn:disabled:hover {
+  background: transparent;
+}
+
+.address-form {
+  flex: 1;
+  margin: 0 4px;
+}
+
+.address-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 18px;
+  background: #fff;
+  font-family: "Inter", sans-serif;
+  font-size: 13.5px;
+  color: var(--text);
+  outline: none;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.address-input::placeholder {
+  color: var(--muted);
+}
+
+.address-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(58, 122, 254, 0.16);
+}
+
+.star-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.star-btn {
+  color: var(--muted);
+}
+
+.star-btn.bookmarked {
+  color: var(--kite-accent-deep);
+}
+
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: rgba(22, 33, 58, 0.05);
+  border-radius: 8px;
+  padding: 2px;
+  flex-shrink: 0;
+}
+
+.zoom-controls .nav-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
+.zoom-controls .nav-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.zoom-level {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  border-radius: 6px;
+  padding: 5px 4px;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.zoom-level:hover {
+  background: #fff;
+  color: var(--text);
+}
+
+/* --- Shield badge (per-site tracker blocking toggle) ---
+   Echoes .zoom-controls' pill shape/sizing right above, at the same
+   toolbar scale. Doubles as a status indicator and a toggle button (click
+   -> toggle_site_allowlist, see main.js): .active (blocking on, something
+   caught on this page) swaps in --kite-accent-deep, the same warm amber
+   the bookmark star uses once bookmarked; .site-off (this site
+   allowlisted, blocking off here) uses --danger at low opacity instead -
+   a deliberately different hue from .active so "blocking is OFF" never
+   reads as just a quieter version of "blocking is on", which a plain
+   gray would risk. Native :disabled (see main.js - no real site loaded,
+   e.g. kite://home) is separate from .site-off: greyed out and
+   unclickable, rather than colored like an actual state. */
+
+.shield-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(22, 33, 58, 0.05);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.shield-badge:hover {
+  background: rgba(22, 33, 58, 0.1);
+}
+
+.shield-badge:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.shield-badge:disabled:hover {
+  background: rgba(22, 33, 58, 0.05);
+}
+
+.shield-badge svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.shield-icon-off {
+  display: none;
+}
+
+.shield-badge.site-off .shield-icon-on {
+  display: none;
+}
+
+.shield-badge.site-off .shield-icon-off {
+  display: block;
+}
+
+.shield-badge.active {
+  color: var(--kite-accent-deep);
+}
+
+.shield-badge.site-off {
+  color: var(--danger);
+  opacity: 0.75;
+}
+
+body.private-active .shield-badge.active {
+  color: var(--private-accent);
+}
+
+body.private-active .shield-badge.site-off {
+  color: #e08a8a; /* --danger reads too dark against the private-mode
+                      toolbar's own dark background - lightened to match
+                      how every other private-active override in this
+                      file adjusts for that background, not just reusing
+                      the light-mode color as-is. */
+}
+
+/* Visible keyboard focus, kept consistent across all chrome controls. */
+.nav-btn:focus-visible,
+.new-tab-btn:focus-visible,
+.zoom-level:focus-visible,
+.shield-badge:focus-visible,
+.star-btn:focus-visible,
+.library-switch-btn:focus-visible,
+.library-item-action:focus-visible,
+.library-item-remove:focus-visible,
+.address-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Bookmarks bar ---
+   Persistent row just under the toolbar, on every page - not the old
+   home-page quick-links grid (removed). Always present (not hidden when
+   empty) so the chrome's total height - and the content webview
+   positioning Rust computes from it (CHROME_HEIGHT) - stays fixed rather
+   than needing to reflow every time a bookmark is added or removed. */
+
+.bookmarks-bar {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 14px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--toolbar-border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.bookmarks-bar-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bookmarks-bar-empty[hidden] {
+  display: none;
+}
+
+.bookmarks-bar-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Echoes the browser tab shape above (rounded top corners, same muted-
+   until-hovered treatment) per the "tab-form" request, at a smaller,
+   single-row scale appropriate for a bookmarks strip. */
+.bookmarks-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 8px 8px 4px 4px;
+  background: var(--tab-bg);
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 180px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.bookmarks-bar-item:hover {
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--text);
+}
+
+.bookmarks-bar-item-favicon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.bookmarks-bar-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Save-password / autofill prompts ---
+   Both #login-save-prompt and #autofill-prompt share the bookmarks bar's
+   own fixed 36px row (see the markup comment in index.html for why)
+   rather than each adding a bar of their own - hidden by default, and
+   swapped in for the bookmarks list/empty-state text via
+   .login-prompt-active / .autofill-prompt-active on the parent, so the
+   row's height never changes and Rust never needs to reposition the
+   active content webview just because one appeared. They share the
+   .login-save-prompt class for identical styling but are never shown at
+   once (see updateTabPromptVisibility in main.js), so visibility below
+   is scoped by id, not by the shared class alone. */
+.login-save-prompt {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  font-size: 12px;
+}
+
+.bookmarks-bar.login-prompt-active .bookmarks-bar-empty,
+.bookmarks-bar.login-prompt-active .bookmarks-bar-list,
+.bookmarks-bar.autofill-prompt-active .bookmarks-bar-empty,
+.bookmarks-bar.autofill-prompt-active .bookmarks-bar-list {
+  display: none;
+}
+
+.bookmarks-bar.login-prompt-active #login-save-prompt {
+  display: flex;
+}
+
+.bookmarks-bar.autofill-prompt-active #autofill-prompt {
+  display: flex;
+}
+
+.autofill-prompt-select {
+  border: 1px solid var(--toolbar-border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: #fff;
+  max-width: 200px;
+}
+
+.login-save-prompt-text {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.login-save-prompt-error {
+  color: var(--danger);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.login-save-prompt-actions:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.login-save-prompt-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.login-save-prompt-save {
+  background: var(--kite-accent);
+  color: #fff;
+}
+
+.login-save-prompt-save:hover {
+  filter: brightness(1.06);
+}
+
+.login-save-prompt-dismiss {
+  background: transparent;
+  color: var(--muted);
+}
+
+.login-save-prompt-dismiss:hover {
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--text);
+}
+
+.login-save-prompt-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.login-save-prompt-close:hover {
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--text);
+}
+
+.login-save-prompt-unlock:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.login-save-prompt-password-input {
+  flex: 1;
+  max-width: 220px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+/* --- Library panel (history & bookmarks) ---
+   Hidden by default; shown full-screen by adding .open, at which point
+   the Rust side has already resized this webview to fill the window and
+   parked the active tab off-screen. */
+
+.library {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+
+.library.open {
+  display: flex;
+}
+
+.library-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 12px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--toolbar-border);
+  flex-shrink: 0;
+}
+
+.library-switch {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.library-switch-btn {
+  border: none;
+  background: transparent;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.library-switch-btn.active {
+  background: #fff;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.library-clear-btn {
+  border: none;
+  background: transparent;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--danger);
+}
+
+.library-clear-btn:hover {
+  background: rgba(214, 69, 69, 0.1);
+}
+
+.library-view {
+  display: none;
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.library-view.active {
+  display: block;
+}
+
+.library-empty {
+  display: none;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 40px;
+}
+
+.library-empty.visible {
+  display: block;
+}
+
+.library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.library-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+.library-item:hover {
+  background: #f6f6f6;
+}
+
+.library-item-favicon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.library-item-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.library-item-title {
+  font-size: 14px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-item-url {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-item-meta {
+  font-size: 12px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.library-item-remove {
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.library-item-remove:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--danger);
+}
+
+.library-item-action {
+  border: 1px solid var(--toolbar-border);
+  background: #fff;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+/* Reused for the Passwords view's "Saved logins" title + Lock button, on
+   one row instead of Lock sitting wherever settings-section's own flow
+   would otherwise place it. */
+.library-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.library-header-row .settings-section-title {
+  margin: 0;
+}
+
+/* A saved-login row isn't a navigation target the way a history/bookmark
+   .library-item is (see that rule's own cursor: pointer, which this
+   overrides), so no hover background either - Show/Copy/Delete are the
+   only things to interact with here. */
+.vault-login-item {
+  cursor: default;
+}
+
+.vault-login-item:hover {
+  background: transparent;
+}
+
+.vault-login-password {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  color: var(--text);
+  flex-shrink: 0;
+  min-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-login-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.library-item-action:hover {
+  background: var(--btn-hover);
+}
+/* --- Settings panel --- */
+
+.settings-panel {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 8px 20px 40px;
+}
+
+.settings-section {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--toolbar-border);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-section-desc {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.settings-select,
+.settings-text-input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  background: #fff;
+}
+
+.settings-text-input {
+  width: 100%;
+}
+
+.settings-text-input:disabled {
+  background: #f4f4f4;
+  color: var(--muted);
+}
+
+.settings-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  min-height: 32px;
+}
+
+.settings-radio .settings-text-input {
+  flex: 1;
+  margin-left: 4px;
+}
+
+.settings-path-row {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-path-row .settings-text-input {
+  flex: 1;
+}
+
+.settings-blocklist-row {
+  margin-top: 10px;
+  align-items: center;
+}
+
+.settings-status-text {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* --- Password vault (kite://passwords) --- */
+
+/* Only one of setup/locked/unlocked is ever shown at once - same
+   active-toggle pattern as .library-view itself, just nested one level
+   deeper since these three share a single library-view slot. */
+.vault-state {
+  display: none;
+}
+
+.vault-state.active {
+  display: block;
+}
+
+.vault-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 320px;
+}
+
+.vault-submit-btn {
+  align-self: flex-start;
+}
+
+.vault-error {
+  margin: 0;
+  font-size: 12px;
+  color: #c0392b;
+  min-height: 15px;
+}
+
+/* --- New-tab right-click menu (+ button) --- */
+
+.new-tab-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 172px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(22, 33, 58, 0.18);
+}
+
+.new-tab-menu-item {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-tab-menu-item:hover {
+  background: var(--btn-hover);
+}
+
+/* Tinted violet like the private-tab treatment elsewhere, so this option
+   already hints at what it does before you've even clicked it. */
+.new-tab-menu-item.private {
+  color: var(--private-bg-active);
+}
+
+.new-tab-menu-item.private:hover {
+  background: var(--private-bg);
+  color: var(--private-text);
+}
