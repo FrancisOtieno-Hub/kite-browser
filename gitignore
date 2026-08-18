@@ -1,0 +1,22 @@
+# Rust / Tauri build output
+/src-tauri/target/
+
+# Node
+/node_modules/
+
+# Kite runtime data (history, bookmarks, settings, favicons, vault) -
+# generated at runtime in the OS app-data dir during `tauri dev`, but if
+# you ever end up with a copy inside the repo folder, never commit it.
+kite_data.json
+kite_panic.log
+kite_passwords.json
+*.log
+
+# Editor cruft
+.vscode/
+.idea/
+*.swp
+
+# OS cruft
+Thumbs.db
+.DS_Store
