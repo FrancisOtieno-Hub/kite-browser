@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kite Browser</title>
+<meta name="description" content="Kite Browser is a native desktop browser built on your OS's own engine. Fast, light, private, and open source.">
+<link rel="icon" href="logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="wordmark">Kite Browser</div>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#download">Download</a>
+      <a href="https://github.com/FrancisOtieno-Hub/kite-browser" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <img class="logo-mark" src="logo.png" alt="Kite Browser logo">
+  <div class="tether"></div>
+
+  <p class="eyebrow">Open source · Windows now, more soon</p>
+  <h1>Light enough<br>to <span class="accent">fly.</span></h1>
+  <p class="sub">Kite Browser is a native desktop browser built directly on your OS's own engine — no bundled Chromium riding along for the weight. Fast to open, light to run, quiet about what it sends home.</p>
+
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://github.com/FrancisOtieno-Hub/kite-browser/releases/latest" target="_blank" rel="noopener">Download for Windows</a>
+    <a class="btn btn-ghost" href="https://github.com/FrancisOtieno-Hub/kite-browser" target="_blank" rel="noopener">View source</a>
+  </div>
+  <p class="platform-note">Windows 10 / 11 · .exe and .msi installers</p>
+</section>
+
+<div class="facts">
+  <div class="facts-inner">
+    <div class="fact"><strong>Native engine</strong>Runs on your OS's own WebView, not a bundled copy of Chromium.</div>
+    <div class="fact"><strong>Encrypted vault</strong>Passwords locked with Argon2id + AES-GCM, unlocked only by you.</div>
+    <div class="fact"><strong>Real private tabs</strong>Genuine cookie and cache isolation — not just a darker toolbar.</div>
+    <div class="fact"><strong>Built-in blocking</strong>A 97,000+ domain blocklist, refreshable, with per-site control.</div>
+  </div>
+</div>
+
+<section class="features" id="features">
+  <div class="section-head">
+    <p class="eyebrow">What's in the box</p>
+    <h2>Everything a browser<br>should already do</h2>
+  </div>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <svg viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5l8-3z" stroke-linejoin="round"/></svg>
+      <h3>Tracker &amp; ad blocking</h3>
+      <p>On by default, with a per-site allow toggle when a page needs it — right from the shield badge in the toolbar.</p>
+    </div>
+    <div class="feature-card">
+      <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="1.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4" stroke-linecap="round"/></svg>
+      <h3>Password vault</h3>
+      <p>One master password unlocks everything else. Save, autofill, and manage logins without a third-party extension.</p>
+    </div>
+    <div class="feature-card feature-card--private">
+      <svg viewBox="0 0 24 24" style="stroke: var(--indigo);"><path d="M3 12s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7z" stroke-linecap="round" stroke-linejoin="round"/><line x1="4" y1="20" x2="20" y2="4" stroke-linecap="round"/></svg>
+      <h3>Genuine private tabs</h3>
+      <p>Backed by the OS's own incognito profile — real isolation, marked with its own violet tint right in your normal window.</p>
+    </div>
+    <div class="feature-card">
+      <svg viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" stroke-linejoin="round"/></svg>
+      <h3>Fast &amp; light</h3>
+      <p>No second browser engine shipped inside the app — Kite stays out of your RAM's way.</p>
+    </div>
+    <div class="feature-card">
+      <svg viewBox="0 0 24 24"><path d="M16 4l4 4-4 4M8 20l-4-4 4-4M14 4l-4 16" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <h3>Open source</h3>
+      <p>The full source is on GitHub. Read it, build it yourself, or send a fix.</p>
+    </div>
+    <div class="feature-card">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1.5"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="7" y1="6.5" x2="7" y2="6.5" stroke-linecap="round" stroke-width="2.4"/></svg>
+      <h3>Tabs that stay put</h3>
+      <p>Session restore, favicons, a bookmarks bar, history and downloads — the basics, done properly.</p>
+    </div>
+  </div>
+</section>
+
+<section class="download" id="download">
+  <span class="version-chip">v0.1.0</span>
+  <h2>Take it for a flight</h2>
+  <p>Free, open source, and built to be read. Grab the installer that matches how you like to install things.</p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://github.com/FrancisOtieno-Hub/kite-browser/releases/latest" target="_blank" rel="noopener">.msi installer</a>
+    <a class="btn btn-ghost" href="https://github.com/FrancisOtieno-Hub/kite-browser/releases/latest" target="_blank" rel="noopener">.exe installer</a>
+  </div>
+</section>
+
+<section class="support">
+  <div class="support-inner">
+    <p class="eyebrow" style="justify-content:center; display:flex;">Funded by people who use it</p>
+    <h2>No ads. No data deals.<br>Just kept flying.</h2>
+    <p>Kite Browser doesn't sell what you browse. Development is funded by the people who use it — if that's you, a small contribution keeps it airborne.</p>
+    <a class="btn btn-primary" href="https://ko-fi.com/kitebrowser" target="_blank" rel="noopener">Support development</a>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-inner">
+    <span>&copy; <span id="year"></span> ScoTech. Kite Browser is free and open source.</span>
+    <div class="footer-links">
+      <a href="https://github.com/FrancisOtieno-Hub/kite-browser" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/FrancisOtieno-Hub/kite-browser/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/FrancisOtieno-Hub/kite-browser/issues" target="_blank" rel="noopener">Report an issue</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  document.getElementById('year').textContent = new Date().getFullYear();
+</script>
+
+</body>
+</html>
