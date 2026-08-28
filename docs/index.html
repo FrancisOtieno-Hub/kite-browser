@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kite Browser</title>
+<script>
+  /* Reloading on a #features / #download URL should land back on the
+     clean root page, not jump to that section. Run this as early as
+     possible (before the browser resolves the fragment) so there's no
+     visible jump-then-snap-back on refresh. */
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  if (window.location.hash) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+</script>
 <meta name="description" content="Kite Browser is a native desktop browser built on your OS's own engine. Fast, light, private, and open source.">
 <link rel="icon" href="logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -15,7 +25,7 @@
 
 <header>
   <div class="header-inner">
-    <div class="wordmark">Kite Browser</div>
+    <a class="wordmark" href="/" aria-label="Kite Browser home">Kite Browser</a>
     <nav>
       <a href="#features">Features</a>
       <a href="#download">Download</a>
@@ -120,6 +130,11 @@
 
 <script>
   document.getElementById('year').textContent = new Date().getFullYear();
+
+  // Safety net: if this was a fresh load/refresh (not an in-page anchor
+  // click) and the browser still jumped to a section before the head
+  // script above could strip the hash, snap back to the top.
+  window.scrollTo(0, 0);
 </script>
 
 </body>
