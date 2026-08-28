@@ -32,6 +32,8 @@ Windows 10/11 today, via `.msi` and `.exe` installers. macOS and Linux are scope
 
 Grab the latest `.msi` or `.exe` from the [Releases page](https://github.com/FrancisOtieno-Hub/kite-browser/releases/latest).
 
+> **Seeing "Windows protected your PC"?** This is Microsoft's SmartScreen warning, and it shows up on *any* app that isn't code-signed — it isn't specific to Kite, and it isn't a sign of a bad or tampered build. Code signing costs money and Kite doesn't have it yet. To proceed: click **"More info"**, then click the **"Run anyway"** button that appears. This is the standard, safe way past this warning on Windows.
+
 ## Building from source
 
 Requires [Node.js](https://nodejs.org), [Rust](https://rustup.rs), and the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
