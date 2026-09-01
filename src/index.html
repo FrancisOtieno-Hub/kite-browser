@@ -143,6 +143,7 @@
           <button id="show-downloads-btn" class="library-switch-btn">Downloads</button>
           <button id="show-passwords-btn" class="library-switch-btn">Passwords</button>
           <button id="show-settings-btn" class="library-switch-btn">Settings</button>
+          <button id="show-extensions-btn" class="library-switch-btn">Extensions</button>
         </div>
         <button id="clear-history-btn" class="library-clear-btn" title="Clear all history">Clear all</button>
       </div>
@@ -266,6 +267,34 @@
             <h3 class="settings-section-title">Clear browsing data</h3>
             <p class="settings-section-desc">Removes history and download records. Bookmarks are kept.</p>
             <button id="settings-clear-data-btn" class="library-clear-btn">Clear browsing data</button>
+          </section>
+        </div>
+      </div>
+
+      <!-- Extensions: no store/install flow yet - "installing" means
+           dropping a folder with a manifest.json under the extensions
+           directory (Open extensions folder gets you there) and hitting
+           Reload. Enabling/disabling and reloading only take effect for
+           tabs created afterward, same as every other setting here (e.g.
+           content blocking doesn't retroactively unblock an already-
+           loaded page) - the "Applies to new tabs only" line below is
+           the on-screen version of that same caveat. -->
+      <div class="library-view" id="extensions-view">
+        <div class="settings-panel">
+          <section class="settings-section">
+            <div class="library-header-row">
+              <p class="settings-section-desc">
+                Drop a folder with a <code>manifest.json</code> into the
+                extensions folder, then reload to pick it up. Applies to
+                new tabs only.
+              </p>
+              <div class="library-header-row">
+                <button id="extensions-reload-btn" class="library-item-action">Reload extensions</button>
+                <button id="extensions-open-folder-btn" class="library-item-action">Open extensions folder</button>
+              </div>
+            </div>
+            <ul class="library-list" id="extensions-list"></ul>
+            <p class="library-empty" id="extensions-empty">No extensions installed yet.</p>
           </section>
         </div>
       </div>
