@@ -1,0 +1,11 @@
+{
+  "id": "cosmetic-adblock",
+  "name": "Cosmetic Ad Blocking",
+  "version": "1.0.0",
+  "matches": ["*://*/*"],
+  "exclude_matches": [],
+  "run_at": "document_start",
+  "js": ["cosmetic-adblock.js"],
+  "css": [],
+  "permissions": []
+}

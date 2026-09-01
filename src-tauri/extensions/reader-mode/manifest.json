@@ -1,0 +1,11 @@
+{
+  "id": "reader-mode",
+  "name": "Reader Mode",
+  "version": "1.0.0",
+  "matches": ["*://*/*"],
+  "exclude_matches": [],
+  "run_at": "document_idle",
+  "js": ["readability.js", "reader-mode.js"],
+  "css": [],
+  "permissions": []
+}

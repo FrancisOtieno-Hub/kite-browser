@@ -1,0 +1,11 @@
+{
+  "id": "volume-booster",
+  "name": "Volume Booster",
+  "version": "1.0.0",
+  "matches": ["*://*/*"],
+  "exclude_matches": [],
+  "run_at": "document_idle",
+  "js": ["volume-booster.js"],
+  "css": [],
+  "permissions": []
+}

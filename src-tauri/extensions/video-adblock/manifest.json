@@ -1,0 +1,15 @@
+{
+  "id": "video-adblock",
+  "name": "YouTube Video Ad Blocking",
+  "version": "1.0.0",
+  "matches": [
+    "*://www.youtube.com/*",
+    "*://youtube.com/*",
+    "*://m.youtube.com/*"
+  ],
+  "exclude_matches": [],
+  "run_at": "document_idle",
+  "js": ["video-adblock.js"],
+  "css": [],
+  "permissions": []
+}

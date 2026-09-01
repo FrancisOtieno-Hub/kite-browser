@@ -1,0 +1,11 @@
+{
+  "id": "keyboard-nav",
+  "name": "Keyboard Navigation",
+  "version": "1.0.0",
+  "matches": ["*://*/*"],
+  "exclude_matches": [],
+  "run_at": "document_idle",
+  "js": ["keyboard-nav.js"],
+  "css": [],
+  "permissions": []
+}

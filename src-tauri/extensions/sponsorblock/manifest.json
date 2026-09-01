@@ -1,0 +1,15 @@
+{
+  "id": "sponsorblock",
+  "name": "SponsorBlock",
+  "version": "1.0.0",
+  "matches": [
+    "*://www.youtube.com/*",
+    "*://youtube.com/*",
+    "*://m.youtube.com/*"
+  ],
+  "exclude_matches": [],
+  "run_at": "document_idle",
+  "js": ["sponsorblock.js"],
+  "css": [],
+  "permissions": []
+}

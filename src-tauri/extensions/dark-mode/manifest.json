@@ -1,0 +1,11 @@
+{
+  "id": "dark-mode",
+  "name": "Dark Mode",
+  "version": "1.0.0",
+  "matches": ["*://*/*"],
+  "exclude_matches": [],
+  "run_at": "document_start",
+  "js": ["dark-mode.js"],
+  "css": [],
+  "permissions": []
+}
