@@ -469,6 +469,14 @@ struct PersistedData {
     // that's expected, and resolves itself after the first refresh.
     #[serde(default)]
     blocklist_entry_count: Option<usize>,
+    // Which installed extensions (by manifest id) are turned off - see
+    // the "Extensions" module below. The manifests themselves (and which
+    // ids *exist*) live on disk under the extensions directory, not here;
+    // this is only the user's on/off choice, same division of labor as
+    // content_blocking_allowlist above (global list lives elsewhere, this
+    // file only holds the exception/override state).
+    #[serde(default)]
+    extensions: ExtensionSettings,
 }
 
 
@@ -478,6 +486,386 @@ struct AppData {
 }
 
 type SharedAppData = Mutex<AppData>;
+
+// --- Extensions ---
+//
+// A Kite extension is a folder under EXTENSIONS_DIR_NAME (inside the OS
+// app-data dir, alongside kite_data.json) containing a manifest.json plus
+// whatever JS/CSS files it references. There's no store/install flow yet -
+// installing means dropping a folder there and clicking Reload in
+// kite://extensions (see reload_extensions/open_extensions_folder).
+//
+// Design note this all hangs off: WebView2 re-runs every
+// initialization_script on *every* navigation in that webview, not just
+// once at creation (this is exactly why CONTEXT_MENU_SCRIPT/FAVICON_SCRIPT/
+// PASSWORD_CAPTURE_SCRIPT need no per-navigation Rust logic today - see
+// their own comments near the top of this file). So "does this extension
+// apply to the page currently loaded" is answered in JS, at runtime, by
+// the guard build_extension_script wraps around the extension's own code -
+// Rust's job is only to decide which *enabled* extensions get an init
+// script at all when a tab is created, once.
+const EXTENSIONS_DIR_NAME: &str = "extensions";
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ExtensionManifest {
+    id: String,
+    name: String,
+    version: String,
+    #[serde(default)]
+    matches: Vec<String>,
+    #[serde(default)]
+    exclude_matches: Vec<String>,
+    #[serde(default = "default_run_at")]
+    run_at: String, // "document_start" | "document_idle"
+    #[serde(default)]
+    js: Vec<String>,
+    #[serde(default)]
+    css: Vec<String>,
+    // Reserved for a future kite.* bridge (storage, messaging) - not
+    // consumed anywhere yet, so nothing currently trusts this list for
+    // anything security-relevant. Kept in the manifest shape now so
+    // existing extensions don't need a format migration once it is.
+    #[serde(default)]
+    permissions: Vec<String>,
+}
+fn default_run_at() -> String {
+    "document_start".to_string()
+}
+
+// What's actually held in memory once a manifest + its JS/CSS files have
+// been read off disk - compiled_js is the ready-to-inject init script
+// (see build_extension_script), not the raw manifest.
+#[derive(Clone)]
+struct LoadedExtension {
+    manifest: ExtensionManifest,
+    compiled_js: String,
+    enabled: bool,
+}
+
+struct ExtensionManager {
+    extensions: Vec<LoadedExtension>,
+    // The directory extensions live in - kept around so
+    // open_extensions_folder doesn't need to recompute it.
+    dir: PathBuf,
+}
+type SharedExtensions = Mutex<ExtensionManager>;
+
+// Persisted alongside PersistedData - just which ids are turned off. The
+// manifests themselves (and which ids exist at all) are read fresh from
+// disk in load_extensions, so there's nothing else about an extension
+// worth duplicating into kite_data.json.
+//
+// This is an opt-IN (allow) list, not opt-out: an id has to be explicitly
+// present here for its extension to run. Dropping a new folder into
+// EXTENSIONS_DIR_NAME - or picking Kite up after not touching it for a
+// while and finding extensions you don't recognize - should never silently
+// start running code on every page. The person has to visit
+// kite://extensions and flip it on themselves.
+#[derive(Clone, Serialize, Deserialize, Default)]
+struct ExtensionSettings {
+    #[serde(default)]
+    enabled_ids: Vec<String>,
+}
+
+// Display-only view of a LoadedExtension for kite://extensions - leaves
+// out compiled_js (multi-KB of generated JS with nothing to show a user)
+// and the manifest's raw permissions (nothing in the UI surfaces
+// per-permission detail yet).
+#[derive(Clone, Serialize)]
+struct ExtensionInfo {
+    id: String,
+    name: String,
+    version: String,
+    matches: Vec<String>,
+    enabled: bool,
+}
+
+// Tiny Tampermonkey-style glob -> regex translator: '*' becomes '.*',
+// every regex metacharacter is escaped. Good enough for the
+// scheme://host/path shape extension authors actually write; not a full
+// URLPattern implementation.
+fn glob_to_regex(pattern: &str) -> String {
+    let mut out = String::from("^");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => out.push_str(".*"),
+            c if "\\.+?^$()[]{}|".contains(c) => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('$');
+    out
+}
+
+// Wraps an extension's own JS/CSS in a guard that checks the *current*
+// page's URL against its match/exclude patterns before doing anything -
+// see the module comment above for why that check has to live here,
+// client-side, rather than in Rust.
+fn build_extension_script(manifest: &ExtensionManifest, js_body: &str, css_body: &str) -> String {
+    let matches_js = serde_json::to_string(
+        &manifest.matches.iter().map(|p| glob_to_regex(p)).collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
+    let excludes_js = serde_json::to_string(
+        &manifest.exclude_matches.iter().map(|p| glob_to_regex(p)).collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
+    let run_idle = manifest.run_at == "document_idle";
+    let ext_id_json = serde_json::to_string(&manifest.id).unwrap_or_else(|_| "\"unknown\"".to_string());
+    let css_json = serde_json::to_string(css_body).unwrap_or_else(|_| "\"\"".to_string());
+
+    format!(
+        r#"(function() {{
+  const url = location.href;
+  // Kite's own internal pages are off-limits to every extension, no
+  // matter how broad its own matches/exclude_matches are - enforced here
+  // rather than left to manifest authors, specifically so it holds even
+  // for a deliberately broad "*://*/*" match (this is exactly what
+  // exposed the bug: home.html loads over the ordinary dev-server
+  // http://127.0.0.1:<port>/home.html origin, ordinary enough that a
+  // wildcard match matches it too). Checking the pathname rather than a
+  // fixed origin/scheme is deliberate - it holds the same whether
+  // WebviewUrl::App resolves to the dev server, a custom scheme, or
+  // whatever a real Windows build ends up serving assets from, and it
+  // also covers every kite://<view> label (history/bookmarks/settings/
+  // extensions/passwords) for free, since those are just home.html's own
+  // JS switching which panel is shown, not separate page loads.
+  if (/\/(home|crashed)\.html$/.test(location.pathname)) return;
+
+  const matches = {matches_js};
+  const excludes = {excludes_js};
+  if (!matches.some(p => new RegExp(p).test(url))) return;
+  if (excludes.some(p => new RegExp(p).test(url))) return;
+
+  const run = function() {{
+    if ({has_css}) {{
+      const style = document.createElement('style');
+      style.textContent = {css_json};
+      (document.head || document.documentElement).appendChild(style);
+    }}
+    try {{
+      {js_body}
+    }} catch (e) {{
+      console.error('[kite-extension:' + {ext_id_json} + ']', e);
+    }}
+  }};
+
+  if ({run_idle} && document.readyState !== 'complete') {{
+    document.addEventListener('DOMContentLoaded', run, {{ once: true }});
+  }} else {{
+    run();
+  }}
+}})();
+"#,
+        matches_js = matches_js,
+        excludes_js = excludes_js,
+        has_css = !css_body.is_empty(),
+        css_json = css_json,
+        js_body = js_body,
+        ext_id_json = ext_id_json,
+        run_idle = run_idle,
+    )
+}
+
+// Recursively copies a directory tree. Used only by seed_bundled_extensions
+// below - std::fs has no built-in recursive copy, and pulling in a crate
+// like fs_extra for one call felt like more than this needed.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let dest_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else {
+            fs::copy(entry.path(), &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+// Seeds the OS app-data extensions directory from the extensions bundled
+// into the app as Tauri resources - but ONLY if that directory doesn't
+// exist yet. This runs once, on first launch after install: it's what
+// lets a fresh install "just have" the seven built-in extensions ready
+// to enable in kite://extensions, without us ever overwriting a user's
+// own manually-dropped extensions or their edits to the bundled ones on
+// a later app update (existing app-data dir = never touched again).
+fn seed_bundled_extensions(app: &tauri::AppHandle) {
+    let Ok(ext_dir) = app.path().app_data_dir().map(|d| d.join(EXTENSIONS_DIR_NAME)) else {
+        return;
+    };
+    if ext_dir.exists() {
+        return; // not first run - leave it alone
+    }
+    let Ok(bundled_dir) = app.path().resolve("extensions", tauri::path::BaseDirectory::Resource) else {
+        eprintln!("[kite] could not resolve bundled extensions resource dir");
+        return;
+    };
+    if let Err(e) = copy_dir_recursive(&bundled_dir, &ext_dir) {
+        eprintln!("[kite] failed to seed extensions from bundle: {e}");
+    } else {
+        eprintln!("[kite] seeded bundled extensions into {:?}", ext_dir);
+    }
+}
+
+// Scans EXTENSIONS_DIR_NAME and builds a fresh ExtensionManager from
+// whatever's on disk right now, checking each id against the persisted
+// enabled list (opt-in, not opt-out - see ExtensionSettings). Used both at
+// startup (see setup() below) and on demand by reload_extensions, so
+// dropping a new extension's folder in never needs more than a click to
+// pick up - but it starts disabled until that click happens.
+fn load_extensions(app: &tauri::AppHandle) -> ExtensionManager {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_default()
+        .join(EXTENSIONS_DIR_NAME);
+
+    let enabled_ids = {
+        let state = app.state::<SharedAppData>();
+        // Assigning the clone to a named binding first (rather than
+        // letting it be the block's tail expression) forces the
+        // MutexGuard temporary to drop at the end of *this* statement,
+        // before `state` itself goes out of scope - inlining the clone()
+        // call as the tail expression instead trips a real borrowck edge
+        // case where the guard is treated as needing to outlive `state`.
+        let ids = state.lock_recover().data.extensions.enabled_ids.clone();
+        ids
+    };
+
+    let mut extensions = Vec::new();
+    if let Ok(read) = fs::read_dir(&dir) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let manifest_path = path.join("manifest.json");
+            let raw = match fs::read_to_string(&manifest_path) {
+                Ok(raw) => raw,
+                Err(_) => continue, // no manifest.json here - not an extension folder
+            };
+            let manifest: ExtensionManifest = match serde_json::from_str(&raw) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[kite] bad extension manifest at {:?}: {e}", manifest_path);
+                    continue;
+                }
+            };
+            let js_body: String = manifest
+                .js
+                .iter()
+                .filter_map(|f| fs::read_to_string(path.join(f)).ok())
+                .collect::<Vec<_>>()
+                .join("\n;\n");
+            let css_body: String = manifest
+                .css
+                .iter()
+                .filter_map(|f| fs::read_to_string(path.join(f)).ok())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let compiled_js = build_extension_script(&manifest, &js_body, &css_body);
+            let enabled = enabled_ids.contains(&manifest.id);
+            extensions.push(LoadedExtension { manifest, compiled_js, enabled });
+        }
+    }
+    ExtensionManager { extensions, dir }
+}
+
+#[tauri::command]
+fn list_extensions(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Vec<ExtensionInfo>, String> {
+    require_chrome(&webview)?;
+    let state = app.state::<SharedExtensions>();
+    let mgr = state.lock_recover();
+    Ok(mgr
+        .extensions
+        .iter()
+        .map(|e| ExtensionInfo {
+            id: e.manifest.id.clone(),
+            name: e.manifest.name.clone(),
+            version: e.manifest.version.clone(),
+            matches: e.manifest.matches.clone(),
+            enabled: e.enabled,
+        })
+        .collect())
+}
+
+// Toggling doesn't restart anything: it flips the in-memory flag (read by
+// create_tab_webview for the *next* tab/navigation, same as every other
+// setting in this file - e.g. set_content_blocking doesn't retroactively
+// unblock a page already loaded) and persists the enabled-id list to
+// kite_data.json via the same lock/save path content_blocking_allowlist
+// uses.
+#[tauri::command]
+fn set_extension_enabled(webview: tauri::Webview, app: tauri::AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    require_chrome(&webview)?;
+    {
+        let state = app.state::<SharedExtensions>();
+        let mut mgr = state.lock_recover();
+        let Some(ext) = mgr.extensions.iter_mut().find(|e| e.manifest.id == id) else {
+            return Err(format!("unknown extension: {id}"));
+        };
+        ext.enabled = enabled;
+    }
+    {
+        let state = app.state::<SharedAppData>();
+        let mut st = state.lock_recover();
+        let ids = &mut st.data.extensions.enabled_ids;
+        ids.retain(|d| d != &id);
+        if enabled {
+            ids.push(id);
+        }
+    }
+    save_persisted_data(&app);
+    Ok(())
+}
+
+// Re-scans disk and rebuilds every LoadedExtension from scratch (same
+// load_extensions used at startup), then swaps the result into
+// SharedExtensions in one lock. Returns the fresh list so the frontend
+// can re-render immediately without a second round trip.
+#[tauri::command]
+fn reload_extensions(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Vec<ExtensionInfo>, String> {
+    require_chrome(&webview)?;
+    let reloaded = load_extensions(&app);
+    let infos: Vec<ExtensionInfo> = reloaded
+        .extensions
+        .iter()
+        .map(|e| ExtensionInfo {
+            id: e.manifest.id.clone(),
+            name: e.manifest.name.clone(),
+            version: e.manifest.version.clone(),
+            matches: e.manifest.matches.clone(),
+            enabled: e.enabled,
+        })
+        .collect();
+
+    let state = app.state::<SharedExtensions>();
+    *state.lock_recover() = reloaded;
+    Ok(infos)
+}
+
+// Lets "Open extensions folder" in kite://extensions reveal where to drop
+// a new extension's files - same opener call show_download_in_folder
+// already uses for downloads. Creates the folder first since a fresh
+// install won't have one yet.
+#[tauri::command]
+fn open_extensions_folder(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let dir = {
+        let state = app.state::<SharedExtensions>();
+        // Same fix as load_extensions above - name the clone before the
+        // block ends instead of leaving it as the tail expression.
+        let path = state.lock_recover().dir.clone();
+        path
+    };
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener().reveal_item_in_dir(&dir).map_err(|e| e.to_string())
+}
 
 // --- Password vault ---
 //
@@ -2008,12 +2396,44 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
     let label_for_title = label.clone();
     let url_for_error = url.to_string();
 
+    // Every *enabled* extension's compiled init script gets added below,
+    // same as the three built-in ones - each one guards itself against
+    // the tab's current URL at runtime (see build_extension_script), so
+    // handing all of them to every content tab, regardless of the URL
+    // this particular tab happens to be created against, is correct: a
+    // script whose matches don't apply to whatever's loaded right now
+    // simply no-ops.
+    //
+    // Deliberately NOT skipped for HOME_URL/CRASHED_ASSET_MARKER, even
+    // though extensions never want to run *on* those pages - every new
+    // tab is created against HOME_URL first and only reaches a real site
+    // via a later navigation in that same webview, and WebView2 fixes a
+    // webview's init scripts at creation time with no way to add more on
+    // a later navigation (see the module comment above LoadedExtension).
+    // Skipping injection here would mean skipping it for every tab that
+    // will ever exist, since none are created directly against a real
+    // URL.
+    let extension_scripts: Vec<String> = {
+        let state = app.state::<SharedExtensions>();
+        let mgr = state.lock_recover();
+        mgr.extensions
+            .iter()
+            .filter(|e| e.enabled)
+            .map(|e| e.compiled_js.clone())
+            .collect()
+    };
+
+    let mut builder = WebviewBuilder::new(label.clone(), webview_url)
+        .initialization_script(CONTEXT_MENU_SCRIPT)
+        .initialization_script(FAVICON_SCRIPT)
+        .initialization_script(PASSWORD_CAPTURE_SCRIPT);
+    for script in extension_scripts {
+        builder = builder.initialization_script(script);
+    }
+
     let content_webview = window
         .add_child(
-            WebviewBuilder::new(label.clone(), webview_url)
-                .initialization_script(CONTEXT_MENU_SCRIPT)
-                .initialization_script(FAVICON_SCRIPT)
-                .initialization_script(PASSWORD_CAPTURE_SCRIPT)
+            builder
                 // The actual privacy mechanism, not just a UI label - a
                 // real non-persistent cookie/cache store per Tauri's docs
                 // (WebView2 101.0.1210.39+ on Windows, WKWebView's
@@ -3114,6 +3534,65 @@ async fn new_tab(
     Ok(label)
 }
 
+// Lets a content-tab's own injected script (e.g. the keyboard-nav
+// extension's "F" hint mode) open a link in a new tab, mirroring what
+// ctx-open-link already does for the native right-click menu - but unlike
+// that flow, there's no human "pick a menu item" gate here, just a direct
+// invoke() call. Per content.json's own warning, ANY script running in a
+// content webview - not just Kite's own extensions, since a hostile
+// page's own JS shares the same realm under the userscript-style
+// injection model - can call this directly. Two things guard against this
+// becoming a tab-spam vector the way unthrottled window.open() popups
+// historically were:
+//   1. Only http(s) hrefs are accepted, blocking javascript:/data: etc.
+//      from laundering through create_tab_webview's Url::parse +
+//      WebviewUrl::External.
+//   2. LinkOpenThrottle rate-limits to one new tab per source webview per
+//      LINK_OPEN_RATE_LIMIT_MS, regardless of how many times a page's
+//      script calls it.
+const LINK_OPEN_RATE_LIMIT_MS: u128 = 500;
+
+struct LinkOpenThrottle(std::collections::HashMap<String, std::time::Instant>);
+type SharedLinkOpenThrottle = Mutex<LinkOpenThrottle>;
+
+#[tauri::command]
+async fn open_link_in_new_tab(webview: tauri::Webview, app: tauri::AppHandle, href: String) -> Result<(), String> {
+    require_content(&webview)?;
+
+    let parsed = Url::parse(&href).map_err(|e| e.to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("only http/https links can be opened".to_string());
+    }
+
+    {
+        let state = app.state::<SharedLinkOpenThrottle>();
+        let mut st = state.lock_recover();
+        let now = std::time::Instant::now();
+        if let Some(last) = st.0.get(webview.label()) {
+            if now.duration_since(*last).as_millis() < LINK_OPEN_RATE_LIMIT_MS {
+                return Err("rate limited".to_string());
+            }
+        }
+        st.0.insert(webview.label().to_string(), now);
+    }
+
+    let source_is_private = {
+        let state = app.state::<SharedTabState>();
+        let st = state.lock_recover();
+        st.tabs
+            .iter()
+            .find(|t| t.label == webview.label())
+            .map(|t| t.is_private)
+            .unwrap_or(false)
+    };
+
+    let label = create_tab_webview(&app, href.as_str(), source_is_private)?;
+    activate_tab(&app, &label)?;
+    emit_tabs_changed(&app);
+    emit_active_url(&app);
+    Ok(())
+}
+
 // Navigates the *current* tab to Home, in place, rather than opening a new
 // one - unlike new_tab, this can't just point the existing webview at
 // home.html directly (that'd need its exact resolved URL, which is
@@ -3414,6 +3893,7 @@ fn open_internal_page(app: &tauri::AppHandle, page: &str) -> Result<(), String> 
         "downloads" => "downloads",
         "settings" => "settings",
         "passwords" => "passwords",
+        "extensions" => "extensions",
         other => return Err(format!("unknown internal page: kite://{other}")),
     };
     show_library_impl(app.clone())?;
@@ -4148,12 +4628,14 @@ fn main() {
         .manage(Mutex::new(None::<ContextMenuTarget>) as SharedContextMenu)
         .manage(Mutex::new(FaviconCache(std::collections::HashMap::new())) as SharedFaviconCache)
         .manage(Mutex::new(PendingLogins(std::collections::HashMap::new())) as SharedPendingLogins)
+        .manage(Mutex::new(LinkOpenThrottle(std::collections::HashMap::new())) as SharedLinkOpenThrottle)
         .invoke_handler(tauri::generate_handler![
             navigate,
             go_back,
             go_forward,
             reload,
             new_tab,
+            open_link_in_new_tab,
             switch_tab,
             close_tab,
             reopen_closed_tab,
@@ -4202,7 +4684,11 @@ fn main() {
             vault_list_logins,
             vault_reveal_login,
             vault_copy_login_password,
-            vault_delete_login
+            vault_delete_login,
+            list_extensions,
+            set_extension_enabled,
+            reload_extensions,
+            open_extensions_folder
         ])
         .setup(|app| {
             install_panic_hook(&app.handle());
@@ -4218,6 +4704,23 @@ fn main() {
                 data: persisted,
                 file_path: data_path,
             }) as SharedAppData);
+
+            // Extensions - on first run only, seed app-data's extensions
+            // dir from what's bundled as resources (see
+            // seed_bundled_extensions's own comment for why it's
+            // one-way/first-run-only). Must run before load_extensions
+            // below, which is what actually reads app-data and populates
+            // SharedExtensions from whatever's on disk there.
+            seed_bundled_extensions(&app.handle());
+
+            // Extensions - scans the extensions directory once at startup
+            // (see load_extensions's own comment); reload_extensions
+            // re-runs this on demand from kite://extensions. Must come
+            // after SharedAppData is managed above (load_extensions reads
+            // the persisted disabled-ids list) and before the first
+            // create_tab_webview call below (it reads SharedExtensions).
+            let loaded_extensions = load_extensions(&app.handle());
+            app.manage(Mutex::new(loaded_extensions) as SharedExtensions);
 
             // Password vault - separate file, separate lock (see the
             // "password vault" module comment above SharedAppData for
