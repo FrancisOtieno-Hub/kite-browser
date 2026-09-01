@@ -283,6 +283,10 @@ h1 .accent { color: var(--amber-dim); }
   line-height: 1.6;
 }
 
+.feature-card--extensions {
+  grid-column: 1 / -1;
+}
+
 /* ---------- Download ---------- */
 
 .download {
