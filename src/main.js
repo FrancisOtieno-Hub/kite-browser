@@ -47,12 +47,18 @@ const showBookmarksBtn = document.getElementById("show-bookmarks-btn");
 const showDownloadsBtn = document.getElementById("show-downloads-btn");
 const showPasswordsBtn = document.getElementById("show-passwords-btn");
 const showSettingsBtn = document.getElementById("show-settings-btn");
+const showExtensionsBtn = document.getElementById("show-extensions-btn");
 const clearHistoryBtn = document.getElementById("clear-history-btn");
 const historyView = document.getElementById("history-view");
 const bookmarksView = document.getElementById("bookmarks-view");
 const downloadsView = document.getElementById("downloads-view");
 const passwordsView = document.getElementById("passwords-view");
 const settingsView = document.getElementById("settings-view");
+const extensionsView = document.getElementById("extensions-view");
+const extensionsList = document.getElementById("extensions-list");
+const extensionsEmpty = document.getElementById("extensions-empty");
+const extensionsReloadBtn = document.getElementById("extensions-reload-btn");
+const extensionsOpenFolderBtn = document.getElementById("extensions-open-folder-btn");
 const vaultSetupState = document.getElementById("vault-setup-state");
 const vaultUnlockState = document.getElementById("vault-unlock-state");
 const vaultUnlockedState = document.getElementById("vault-unlocked-state");
@@ -674,14 +680,18 @@ function switchLibraryView(view) {
   showDownloadsBtn.classList.toggle("active", view === "downloads");
   showPasswordsBtn.classList.toggle("active", view === "passwords");
   showSettingsBtn.classList.toggle("active", view === "settings");
+  showExtensionsBtn.classList.toggle("active", view === "extensions");
   historyView.classList.toggle("active", view === "history");
   bookmarksView.classList.toggle("active", view === "bookmarks");
   downloadsView.classList.toggle("active", view === "downloads");
   passwordsView.classList.toggle("active", view === "passwords");
   settingsView.classList.toggle("active", view === "settings");
-  // Bookmarks, Passwords, and Settings have no "clear all" of their own.
-  clearHistoryBtn.style.visibility =
-    view === "bookmarks" || view === "passwords" || view === "settings" ? "hidden" : "visible";
+  extensionsView.classList.toggle("active", view === "extensions");
+  // Bookmarks, Passwords, Settings, and Extensions have no "clear all" of
+  // their own.
+  clearHistoryBtn.style.visibility = ["bookmarks", "passwords", "settings", "extensions"].includes(view)
+    ? "hidden"
+    : "visible";
 }
 
 function goToUrlFromLibrary(url) {
@@ -1017,6 +1027,84 @@ settingsClearDataBtn.addEventListener("click", () => {
     .catch((err) => console.error("[kite] clear browsing data failed:", err));
 });
 
+// --- Extensions ---
+
+// Shared by loadExtensions (initial open / after a toggle) and the
+// Reload button (which already gets the fresh list back from
+// reload_extensions, so no second round trip is needed there).
+function renderExtensionList(extensions) {
+  extensionsList.innerHTML = "";
+  extensionsEmpty.classList.toggle("visible", extensions.length === 0);
+  extensions.forEach((ext) => {
+    const li = document.createElement("li");
+    li.className = "library-item";
+
+    const text = document.createElement("div");
+    text.className = "library-item-text";
+
+    const title = document.createElement("div");
+    title.className = "library-item-title";
+    title.textContent = `${ext.name} (${ext.version})`;
+    text.appendChild(title);
+
+    const matches = document.createElement("div");
+    matches.className = "library-item-url";
+    matches.textContent = ext.matches.length ? ext.matches.join(", ") : "No sites matched";
+    text.appendChild(matches);
+
+    li.appendChild(text);
+
+    // Same plain-checkbox convention as settings-content-blocking - no
+    // new toggle-switch component needed for this.
+    const label = document.createElement("label");
+    label.className = "settings-radio";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = ext.enabled;
+    const statusText = document.createTextNode(ext.enabled ? "Enabled" : "Disabled");
+    toggle.addEventListener("change", () => {
+      const nextEnabled = toggle.checked;
+      invoke("set_extension_enabled", { id: ext.id, enabled: nextEnabled })
+        .then(() => {
+          statusText.textContent = nextEnabled ? "Enabled" : "Disabled";
+        })
+        .catch((err) => {
+          console.error("[kite] set_extension_enabled failed:", err);
+          toggle.checked = !nextEnabled; // revert on failure - label already matched the pre-click state, so no text change needed
+        });
+    });
+    label.appendChild(toggle);
+    label.appendChild(statusText);
+    li.appendChild(label);
+
+    extensionsList.appendChild(li);
+  });
+}
+
+function loadExtensions() {
+  invoke("list_extensions")
+    .then(renderExtensionList)
+    .catch((err) => console.error("[kite] list_extensions failed:", err));
+}
+
+extensionsOpenFolderBtn.addEventListener("click", () => {
+  invoke("open_extensions_folder").catch((err) =>
+    console.error("[kite] open_extensions_folder failed:", err)
+  );
+});
+
+extensionsReloadBtn.addEventListener("click", () => {
+  extensionsReloadBtn.disabled = true;
+  extensionsReloadBtn.textContent = "Reloading\u2026";
+  invoke("reload_extensions")
+    .then(renderExtensionList)
+    .catch((err) => console.error("[kite] reload_extensions failed:", err))
+    .finally(() => {
+      extensionsReloadBtn.disabled = false;
+      extensionsReloadBtn.textContent = "Reload extensions";
+    });
+});
+
 // Shows exactly one of the three vault-state sections based on
 // vault_status, and clears any stale error text/inputs left over from a
 // previous visit - called whenever the Passwords view opens, and again
@@ -1182,6 +1270,7 @@ showBookmarksBtn.addEventListener("click", () => goToInternalPage("bookmarks"));
 showDownloadsBtn.addEventListener("click", () => goToInternalPage("downloads"));
 showPasswordsBtn.addEventListener("click", () => goToInternalPage("passwords"));
 showSettingsBtn.addEventListener("click", () => goToInternalPage("settings"));
+showExtensionsBtn.addEventListener("click", () => goToInternalPage("extensions"));
 
 clearHistoryBtn.addEventListener("click", () => {
   if (currentLibraryView === "downloads") {
@@ -1196,7 +1285,7 @@ clearHistoryBtn.addEventListener("click", () => {
 });
 
 listen("open-library-view", (event) => {
-  const view = event.payload; // "history" | "bookmarks" | "downloads" | "passwords" | "settings"
+  const view = event.payload; // "history" | "bookmarks" | "downloads" | "passwords" | "settings" | "extensions"
   console.log("[kite] open-library-view event received:", view);
   libraryPanel.classList.add("open");
   chromeEl.classList.add("library-mode");
@@ -1211,6 +1300,8 @@ listen("open-library-view", (event) => {
     refreshVaultUI();
   } else if (view === "settings") {
     loadSettings();
+  } else if (view === "extensions") {
+    loadExtensions();
   }
 }).then(() => console.log("[kite] listening for open-library-view"))
   .catch((err) => console.error("[kite] failed to listen open-library-view:", err));
