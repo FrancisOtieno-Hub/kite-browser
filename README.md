@@ -14,6 +14,7 @@ Built with [Tauri v2](https://tauri.app) (Rust backend + HTML/CSS/JS chrome), re
 - **History & bookmarks** — JSON-persisted, with a library panel UI
 - **Homepage** (`kite://home`) — search bar, photo background, persistent bookmarks bar
 - **Content blocking** — a 97,000+ domain blocklist, refreshable, with per-site allow toggle
+- **Extensions** (`kite://settings` → Extensions) — seven built-in, opt-in extensions: Dark Mode, Cosmetic Ad Blocking, SponsorBlock, YouTube Video Ad Blocking, Volume Booster (up to 500%, per-origin), Reader Mode, and Vimium-style Keyboard Navigation. Nothing runs until you enable it.
 - **Password vault** — Argon2id + AES-GCM encrypted, one master password, save & autofill, no third-party extension needed
 - **Genuine private tabs** — real cookie/cache isolation via the OS's own incognito profile, not just a UI label
 - **Find-in-page & zoom** — Ctrl+F, Ctrl+/-/0, tracked per tab
@@ -54,7 +55,8 @@ npm run tauri build
 ## Roadmap
 
 - Cross-platform support (macOS/Linux) — scoping is done; implementation is blocked on access to non-Windows hardware
-- Browser extensions
+- Chrome/Firefox extension import
+- Free Download Manager integration
 
 ## Contributing
 
