@@ -59,6 +59,10 @@
     "allow-vault-copy-login-password",
     "allow-vault-delete-login",
     "allow-vault-unlock-and-save-login",
-    "allow-vault-autofill"
+    "allow-vault-autofill",
+    "allow-list-extensions",
+    "allow-set-extension-enabled",
+    "allow-reload-extensions",
+    "allow-open-extensions-folder"
   ]
 }
