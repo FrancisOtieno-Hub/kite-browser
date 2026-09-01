@@ -246,10 +246,14 @@ h1 .accent { color: var(--amber-dim); }
 
 .feature-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 1px;
   background: var(--line);
   border: 1px solid var(--line);
+}
+
+@media (max-width: 900px) {
+  .feature-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 .feature-card {
@@ -370,6 +374,7 @@ footer {
   nav { gap: 20px; font-size: 13px; }
   .hero { padding: 64px 20px 48px; }
   .features, .download, .support { padding: 64px 20px; }
+  .feature-grid { grid-template-columns: 1fr; }
   .fact { flex: 1 1 100%; border-right: none; border-bottom: 1px solid var(--line); }
   .fact:last-child { border-bottom: none; }
   body { background-attachment: scroll; }
