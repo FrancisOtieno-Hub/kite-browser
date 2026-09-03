@@ -1388,6 +1388,13 @@ function runShortcutAction(action) {
     case "open_history":
       goToInternalPage("history");
       break;
+    case "toggle_tab_search":
+      if (tabSearchOverlay.classList.contains("open")) {
+        closeTabSearch();
+      } else {
+        openTabSearch();
+      }
+      break;
     case "go_back":
       backBtn.click();
       break;
@@ -1459,6 +1466,170 @@ document.addEventListener("keydown", (e) => {
     closeLibrary();
   }
 });
+
+// ---------------------------------------------------------------------
+// Tab search / command palette (Ctrl+K)
+//
+// Filters the live tab list and switches/closes tabs via the same
+// switch_tab/close_tab commands the tab bar itself uses. Opening/closing
+// the overlay itself goes through show_tab_search/hide_tab_search - the
+// overlay is plain HTML/CSS living inside the small chrome webview, which
+// normally only covers the toolbar strip (the rest of the window is a
+// separate native content webview on top of it), so without those two
+// commands temporarily resizing chrome to fill the window - exactly what
+// show_library/hide_library already do for the library panel - the
+// overlay would only ever be visible within that thin strip. Ctrl+K
+// itself is wired as a real global shortcut (see "shortcut" listener /
+// runShortcutAction's "toggle_tab_search" case below), not a local
+// document keydown listener, since a content tab (a different native
+// webview with its own focus) would otherwise swallow the keystroke
+// before it ever reached this document.
+// ---------------------------------------------------------------------
+
+document.getElementById("tab-search-btn").addEventListener("click", () => openTabSearch());
+
+const tabSearchOverlay = document.getElementById("tab-search-overlay");
+const tabSearchInput = document.getElementById("tab-search-input");
+const tabSearchList = document.getElementById("tab-search-list");
+const tabSearchEmpty = document.getElementById("tab-search-empty");
+
+let tabSearchResults = []; // currently rendered/filtered tabs, in display order
+let tabSearchSelectedIndex = 0;
+
+function openTabSearch() {
+  // Close the library panel first if it's open - only one overlay should
+  // be usable at a time, and the tab search box floats above everything
+  // including the library, which would look broken layered together.
+  // closeLibrary() already invokes hide_library, so chrome is back to its
+  // normal size before show_tab_search below takes it full-window again.
+  if (libraryPanel.classList.contains("open")) closeLibrary();
+
+  invoke("show_tab_search")
+    .then(() => invoke("get_tabs"))
+    .then(({ tabs }) => {
+      tabSearchOverlay.classList.add("open");
+      tabSearchInput.value = "";
+      renderTabSearchResults(tabs, "");
+      // Focus after the overlay is actually visible, not before - focusing
+      // a display:none input silently no-ops in some WebView2 builds.
+      requestAnimationFrame(() => tabSearchInput.focus());
+    })
+    .catch((err) => console.error("[kite] show_tab_search failed:", err));
+}
+
+function closeTabSearch() {
+  tabSearchOverlay.classList.remove("open");
+  invoke("hide_tab_search").catch((err) =>
+    console.error("[kite] hide_tab_search failed:", err)
+  );
+}
+
+function renderTabSearchResults(allTabs, query) {
+  const q = query.trim().toLowerCase();
+  tabSearchResults = q
+    ? allTabs.filter(
+        (t) =>
+          (t.title || "").toLowerCase().includes(q) ||
+          (t.url || "").toLowerCase().includes(q)
+      )
+    : allTabs;
+
+  tabSearchSelectedIndex = 0;
+  tabSearchList.innerHTML = "";
+  tabSearchEmpty.classList.toggle("visible", tabSearchResults.length === 0);
+
+  tabSearchResults.forEach((tab, i) => {
+    const li = document.createElement("li");
+    li.className = "tab-search-item" + (i === 0 ? " selected" : "");
+
+    li.appendChild(makeFaviconImg(tab.favicon, "tab-search-item-favicon"));
+
+    const text = document.createElement("div");
+    text.className = "tab-search-item-text";
+    const title = document.createElement("div");
+    title.className = "tab-search-item-title";
+    title.textContent = tab.title || tab.url || "New Tab";
+    const url = document.createElement("div");
+    url.className = "tab-search-item-url";
+    url.textContent = tab.url === "kite://home" ? "" : tab.url;
+    text.appendChild(title);
+    text.appendChild(url);
+    li.appendChild(text);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "tab-search-item-close";
+    closeBtn.title = "Close tab";
+    closeBtn.textContent = "\u2715";
+    closeBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      invoke("close_tab", { label: tab.label }).catch((err) =>
+        console.error("[kite] close_tab (tab search) failed:", err)
+      );
+      // Re-fetch rather than hand-splice the array, so a tab that was
+      // simultaneously closed elsewhere (e.g. Ctrl+W) can't desync this
+      // list from what actually still exists.
+      invoke("get_tabs")
+        .then(({ tabs }) => renderTabSearchResults(tabs, tabSearchInput.value))
+        .catch((err) => console.error("[kite] get_tabs (tab search) failed:", err));
+    });
+    li.appendChild(closeBtn);
+
+    li.addEventListener("click", () => selectTabSearchResult(i));
+    tabSearchList.appendChild(li);
+  });
+}
+
+function selectTabSearchResult(index) {
+  const tab = tabSearchResults[index];
+  if (!tab) return;
+  invoke("switch_tab", { label: tab.label }).catch((err) =>
+    console.error("[kite] switch_tab (tab search) failed:", err)
+  );
+  closeTabSearch();
+}
+
+function moveTabSearchSelection(delta) {
+  if (tabSearchResults.length === 0) return;
+  const items = tabSearchList.querySelectorAll(".tab-search-item");
+  items[tabSearchSelectedIndex]?.classList.remove("selected");
+  tabSearchSelectedIndex =
+    (tabSearchSelectedIndex + delta + tabSearchResults.length) % tabSearchResults.length;
+  items[tabSearchSelectedIndex]?.classList.add("selected");
+  items[tabSearchSelectedIndex]?.scrollIntoView({ block: "nearest" });
+}
+
+tabSearchInput.addEventListener("input", () => {
+  invoke("get_tabs")
+    .then(({ tabs }) => renderTabSearchResults(tabs, tabSearchInput.value))
+    .catch((err) => console.error("[kite] get_tabs (tab search) failed:", err));
+});
+
+tabSearchInput.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    moveTabSearchSelection(1);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    moveTabSearchSelection(-1);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    selectTabSearchResult(tabSearchSelectedIndex);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeTabSearch();
+  }
+});
+
+// Clicking the dimmed backdrop (anywhere outside the box) closes it, same
+// convention as the new-tab-menu overlay elsewhere in this file.
+tabSearchOverlay.addEventListener("click", (e) => {
+  if (e.target === tabSearchOverlay) closeTabSearch();
+});
+
+// Note: Ctrl+K itself is NOT bound here. It's registered as a real OS-level
+// global shortcut in Rust (so it fires no matter which webview - chrome or
+// a content tab - currently has focus) and arrives via the "shortcut"
+// event's "toggle_tab_search" case in runShortcutAction above.
 
 // Prime the tab bar and address bar on load too - relying solely on the
 // tabs-changed/url-changed events pushed from Rust risks losing the very
