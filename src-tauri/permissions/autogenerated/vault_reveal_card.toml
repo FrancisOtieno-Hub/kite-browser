@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-vault-reveal-card"
+description = "Enables the vault_reveal_card command without any pre-configured scope."
+commands.allow = ["vault_reveal_card"]
+
+[[permission]]
+identifier = "deny-vault-reveal-card"
+description = "Denies the vault_reveal_card command without any pre-configured scope."
+commands.deny = ["vault_reveal_card"]

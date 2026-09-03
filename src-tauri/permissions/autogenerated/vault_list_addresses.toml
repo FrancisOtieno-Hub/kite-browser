@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-vault-list-addresses"
+description = "Enables the vault_list_addresses command without any pre-configured scope."
+commands.allow = ["vault_list_addresses"]
+
+[[permission]]
+identifier = "deny-vault-list-addresses"
+description = "Denies the vault_list_addresses command without any pre-configured scope."
+commands.deny = ["vault_list_addresses"]
