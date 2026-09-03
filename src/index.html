@@ -67,6 +67,9 @@
       <button id="library-btn" class="nav-btn" title="History &amp; bookmarks (Ctrl+H)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
       </button>
+      <button id="tab-search-btn" class="nav-btn" title="Search tabs (Ctrl+K)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><line x1="20" y1="20" x2="15.3" y2="15.3"/></svg>
+      </button>
     </div>
 
     <!-- Persistent bar, always visible just under the toolbar - not part
@@ -297,6 +300,24 @@
             <p class="library-empty" id="extensions-empty">No extensions installed yet.</p>
           </section>
         </div>
+      </div>
+    </div>
+
+    <!-- Tab search / command palette - toggled with Ctrl+K, pure chrome-side
+         UI over the existing tab list (get_tabs/switch_tab/close_tab IPC),
+         no new Rust commands needed. -->
+    <div class="tab-search-overlay" id="tab-search-overlay">
+      <div class="tab-search-box">
+        <input
+          type="text"
+          id="tab-search-input"
+          class="tab-search-input"
+          placeholder="Search open tabs&hellip;"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <ul class="tab-search-list" id="tab-search-list"></ul>
+        <p class="tab-search-empty" id="tab-search-empty">No matching tabs.</p>
       </div>
     </div>
   </div>
