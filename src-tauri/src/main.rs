@@ -177,6 +177,16 @@ struct TabState {
     // the right kite://<view> address-bar text when returning to a
     // parked library tab - default matches main.js's own default.
     library_view: String,
+    // Mirrors library_tab's role but for the tab-search overlay (Ctrl+K):
+    // true while it's open, which - like the library panel - means the
+    // chrome webview is temporarily resized to fill the whole window and
+    // the active tab's own webview is parked off-screen underneath it.
+    // Unlike library_tab this isn't pinned to any particular tab, since
+    // the overlay is meant to be opened, used, and dismissed in a couple
+    // of keystrokes rather than persisted per tab - it's just a plain
+    // bool, and always closes itself (see hide_tab_search) rather than
+    // reopening automatically the way a parked library view does.
+    tab_search_open: bool,
     // URLs of recently closed tabs, most-recent-last, for
     // reopen_closed_tab (Ctrl+Shift+T) - in-memory only, same as the
     // favicon fetch-dedup cache, since a "recently closed" list that
@@ -3882,6 +3892,74 @@ fn hide_library(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), St
     Ok(())
 }
 
+// Tab search (Ctrl+K) needs the exact same "chrome webview temporarily
+// fills the whole window, active tab's content webview parks off-screen
+// underneath it" treatment as the library panel above - the overlay is
+// plain HTML/CSS living inside the chrome webview's own document, so it
+// can only ever be as big as that webview currently is. Deliberately
+// simpler than show_library_impl/hide_library though: no library_tab-
+// style pinning, since this overlay isn't meant to persist per tab - it's
+// opened, used for a few keystrokes, and closed, always by the frontend
+// itself (Enter/Escape/backdrop-click/close button), never re-shown
+// automatically by switching tabs the way a parked library view is.
+#[tauri::command]
+fn show_tab_search(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let (win_w, win_h, active) = {
+        let state = app.state::<SharedTabState>();
+        let mut st = state.lock_recover();
+        st.tab_search_open = true;
+        (st.window_size.0, st.window_size.1, st.active.clone())
+    };
+    if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
+        chrome
+            .set_size(LogicalSize::new(win_w, win_h))
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(active_webview) = app.get_webview(&active) {
+        let _ = active_webview.set_position(hidden_position());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_tab_search(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let (win_w, win_h, active) = {
+        let state = app.state::<SharedTabState>();
+        let mut st = state.lock_recover();
+        // Don't clobber the library panel's own full-window takeover if
+        // that's what's actually open right now - only shrink chrome back
+        // down when tab search was the thing holding it open. This
+        // matters for the Ctrl+K-while-library-is-open path: the frontend
+        // already calls hide_library (not this) to close the library
+        // first in that case, but this guard keeps the two features from
+        // ever fighting over chrome's size if that ordering assumption
+        // ever breaks.
+        st.tab_search_open = false;
+        let lib_open = st.library_tab.as_deref() == Some(st.active.as_str());
+        (st.window_size.0, st.window_size.1, if lib_open { None } else { Some(st.active.clone()) })
+    };
+    if active.is_none() {
+        return Ok(());
+    }
+    let active = active.unwrap();
+    if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
+        chrome
+            .set_size(LogicalSize::new(win_w, CHROME_HEIGHT))
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(active_webview) = app.get_webview(&active) {
+        active_webview
+            .set_position(visible_position())
+            .map_err(|e| e.to_string())?;
+        active_webview
+            .set_size(content_size(win_w, win_h))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // kite://history and kite://bookmarks aren't real navigable URLs - there's
 // nothing for a content webview to load - so navigate() intercepts them
 // before they'd otherwise get treated as a search query, and routes to
@@ -4553,6 +4631,8 @@ fn main() {
                         Some("toggle_bookmark")
                     } else if *shortcut == Shortcut::new(Some(Modifiers::CONTROL), Code::KeyH) {
                         Some("open_history")
+                    } else if *shortcut == Shortcut::new(Some(Modifiers::CONTROL), Code::KeyK) {
+                        Some("toggle_tab_search")
                     } else if *shortcut == Shortcut::new(Some(Modifiers::CONTROL), Code::KeyF) {
                         Some("find_in_page")
                     } else if *shortcut == Shortcut::new(Some(Modifiers::CONTROL), Code::Equal) {
@@ -4623,6 +4703,7 @@ fn main() {
             window_size: (1200.0, 800.0),
             library_tab: None,
             library_view: "history".to_string(),
+            tab_search_open: false,
             closed_tabs: Vec::new(),
         }))
         .manage(Mutex::new(None::<ContextMenuTarget>) as SharedContextMenu)
@@ -4664,6 +4745,8 @@ fn main() {
             go_home,
             show_library,
             hide_library,
+            show_tab_search,
+            hide_tab_search,
             toggle_find_in_page,
             report_context_menu,
             report_content_click,
@@ -4759,6 +4842,7 @@ fn main() {
                 Shortcut::new(Some(Modifiers::CONTROL), Code::KeyL),
                 Shortcut::new(Some(Modifiers::CONTROL), Code::KeyD),
                 Shortcut::new(Some(Modifiers::CONTROL), Code::KeyH),
+                Shortcut::new(Some(Modifiers::CONTROL), Code::KeyK),
                 Shortcut::new(Some(Modifiers::CONTROL), Code::KeyF),
                 Shortcut::new(Some(Modifiers::CONTROL), Code::Equal),
                 Shortcut::new(Some(Modifiers::CONTROL), Code::Minus),
@@ -4842,7 +4926,15 @@ fn main() {
                     let (active_label, lib_open) = {
                         let mut st = state.lock_recover();
                         st.window_size = (logical.width, logical.height);
-                        let lib_open = st.library_tab.as_deref() == Some(st.active.as_str());
+                        // Tab search gets the same full-window chrome
+                        // treatment as the library panel for this sync -
+                        // both mean "the active tab's content webview is
+                        // parked and chrome covers the whole window right
+                        // now", so a live window resize needs to keep
+                        // chrome full-size (not shrink to CHROME_HEIGHT)
+                        // in either case.
+                        let lib_open = st.library_tab.as_deref() == Some(st.active.as_str())
+                            || st.tab_search_open;
                         (st.active.clone(), lib_open)
                     };
 
