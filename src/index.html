@@ -204,6 +204,63 @@
             </div>
             <p class="library-empty" id="vault-logins-empty">No saved logins yet - they'll show up here once you save one from the prompt after logging into a site.</p>
             <ul class="library-list" id="vault-logins-list"></ul>
+
+            <!-- Payment methods: unlike logins, there's no page to capture
+                 these from - added/edited directly via this form. `label`
+                 is the natural key (see VaultCardPlaintext in main.rs); the
+                 same form and Save button serve both "Add" and "Edit"
+                 (see vault-card-original-label). -->
+            <div class="library-header-row vault-subsection">
+              <h3 class="settings-section-title">Payment methods</h3>
+              <button type="button" id="vault-add-card-btn" class="library-item-action">Add card</button>
+            </div>
+            <form id="vault-card-form" class="vault-form vault-inline-form" hidden>
+              <input type="hidden" id="vault-card-original-label" />
+              <input type="text" id="vault-card-label" class="settings-text-input" placeholder="Label (e.g. Personal Visa)" autocomplete="off" />
+              <input type="text" id="vault-card-name" class="settings-text-input" placeholder="Name on card" autocomplete="cc-name" />
+              <input type="text" id="vault-card-number" class="settings-text-input" placeholder="Card number" autocomplete="cc-number" inputmode="numeric" />
+              <div class="vault-form-row">
+                <input type="text" id="vault-card-month" class="settings-text-input" placeholder="MM" autocomplete="cc-exp-month" inputmode="numeric" maxlength="2" />
+                <input type="text" id="vault-card-year" class="settings-text-input" placeholder="YYYY" autocomplete="cc-exp-year" inputmode="numeric" maxlength="4" />
+                <input type="text" id="vault-card-cvv" class="settings-text-input" placeholder="CVV" autocomplete="cc-csc" inputmode="numeric" maxlength="4" />
+              </div>
+              <p class="vault-error" id="vault-card-error"></p>
+              <div class="vault-form-actions">
+                <button type="submit" class="library-item-action vault-submit-btn">Save card</button>
+                <button type="button" id="vault-card-cancel-btn" class="library-item-action">Cancel</button>
+              </div>
+            </form>
+            <p class="library-empty" id="vault-cards-empty">No saved cards yet.</p>
+            <ul class="library-list" id="vault-cards-list"></ul>
+
+            <!-- Addresses: same direct-entry pattern as cards above. -->
+            <div class="library-header-row vault-subsection">
+              <h3 class="settings-section-title">Addresses</h3>
+              <button type="button" id="vault-add-address-btn" class="library-item-action">Add address</button>
+            </div>
+            <form id="vault-address-form" class="vault-form vault-inline-form" hidden>
+              <input type="hidden" id="vault-address-original-label" />
+              <input type="text" id="vault-address-label" class="settings-text-input" placeholder="Label (e.g. Home)" autocomplete="off" />
+              <input type="text" id="vault-address-name" class="settings-text-input" placeholder="Full name" autocomplete="name" />
+              <input type="text" id="vault-address-line1" class="settings-text-input" placeholder="Address line 1" autocomplete="address-line1" />
+              <input type="text" id="vault-address-line2" class="settings-text-input" placeholder="Address line 2 (optional)" autocomplete="address-line2" />
+              <div class="vault-form-row">
+                <input type="text" id="vault-address-city" class="settings-text-input" placeholder="City" autocomplete="address-level2" />
+                <input type="text" id="vault-address-state" class="settings-text-input" placeholder="State / Province" autocomplete="address-level1" />
+              </div>
+              <div class="vault-form-row">
+                <input type="text" id="vault-address-postal" class="settings-text-input" placeholder="Postal code" autocomplete="postal-code" />
+                <input type="text" id="vault-address-country" class="settings-text-input" placeholder="Country" autocomplete="country-name" />
+              </div>
+              <input type="text" id="vault-address-phone" class="settings-text-input" placeholder="Phone (optional)" autocomplete="tel" />
+              <p class="vault-error" id="vault-address-error"></p>
+              <div class="vault-form-actions">
+                <button type="submit" class="library-item-action vault-submit-btn">Save address</button>
+                <button type="button" id="vault-address-cancel-btn" class="library-item-action">Cancel</button>
+              </div>
+            </form>
+            <p class="library-empty" id="vault-addresses-empty">No saved addresses yet.</p>
+            <ul class="library-list" id="vault-addresses-list"></ul>
           </section>
         </div>
       </div>
