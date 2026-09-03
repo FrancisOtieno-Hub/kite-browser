@@ -72,6 +72,35 @@ const vaultUnlockForm = document.getElementById("vault-unlock-form");
 const vaultUnlockPassword = document.getElementById("vault-unlock-password");
 const vaultUnlockError = document.getElementById("vault-unlock-error");
 const vaultLockBtn = document.getElementById("vault-lock-btn");
+const vaultAddCardBtn = document.getElementById("vault-add-card-btn");
+const vaultCardForm = document.getElementById("vault-card-form");
+const vaultCardOriginalLabel = document.getElementById("vault-card-original-label");
+const vaultCardLabel = document.getElementById("vault-card-label");
+const vaultCardName = document.getElementById("vault-card-name");
+const vaultCardNumber = document.getElementById("vault-card-number");
+const vaultCardMonth = document.getElementById("vault-card-month");
+const vaultCardYear = document.getElementById("vault-card-year");
+const vaultCardCvv = document.getElementById("vault-card-cvv");
+const vaultCardError = document.getElementById("vault-card-error");
+const vaultCardCancelBtn = document.getElementById("vault-card-cancel-btn");
+const vaultCardsList = document.getElementById("vault-cards-list");
+const vaultCardsEmpty = document.getElementById("vault-cards-empty");
+const vaultAddAddressBtn = document.getElementById("vault-add-address-btn");
+const vaultAddressForm = document.getElementById("vault-address-form");
+const vaultAddressOriginalLabel = document.getElementById("vault-address-original-label");
+const vaultAddressLabel = document.getElementById("vault-address-label");
+const vaultAddressName = document.getElementById("vault-address-name");
+const vaultAddressLine1 = document.getElementById("vault-address-line1");
+const vaultAddressLine2 = document.getElementById("vault-address-line2");
+const vaultAddressCity = document.getElementById("vault-address-city");
+const vaultAddressState = document.getElementById("vault-address-state");
+const vaultAddressPostal = document.getElementById("vault-address-postal");
+const vaultAddressCountry = document.getElementById("vault-address-country");
+const vaultAddressPhone = document.getElementById("vault-address-phone");
+const vaultAddressError = document.getElementById("vault-address-error");
+const vaultAddressCancelBtn = document.getElementById("vault-address-cancel-btn");
+const vaultAddressesList = document.getElementById("vault-addresses-list");
+const vaultAddressesEmpty = document.getElementById("vault-addresses-empty");
 const settingsSearchEngine = document.getElementById("settings-search-engine");
 const settingsHomepageRadios = document.querySelectorAll('input[name="settings-homepage-mode"]');
 const settingsHomepageUrl = document.getElementById("settings-homepage-url");
@@ -1117,7 +1146,11 @@ function refreshVaultUI() {
       vaultSetupState.classList.toggle("active", state === "none");
       vaultUnlockState.classList.toggle("active", state === "locked");
       vaultUnlockedState.classList.toggle("active", state === "unlocked");
-      if (state === "unlocked") loadVaultLogins();
+      if (state === "unlocked") {
+        loadVaultLogins();
+        loadVaultCards();
+        loadVaultAddresses();
+      }
     })
     .catch((err) => console.error("[kite] vault_status failed:", err));
 }
@@ -1215,6 +1248,285 @@ function loadVaultLogins() {
     .catch((err) => console.error("[kite] vault_list_logins failed:", err));
 }
 
+// --- Payment methods ---
+//
+// Same list-then-explicit-reveal shape as loadVaultLogins: the list never
+// carries the full card number or CVV (see VaultCardSummary in main.rs),
+// only enough to tell cards apart at a glance. Unlike logins there's no
+// separate "Show" toggle on the row - clicking Edit is what fetches the
+// full card (vault_reveal_card) and drops it into the form, since editing
+// and revealing need the same data anyway and a card is edited far more
+// often than a login's password is "shown".
+function resetVaultCardForm() {
+  vaultCardForm.reset();
+  vaultCardOriginalLabel.value = "";
+  vaultCardError.textContent = "";
+}
+
+function openVaultCardForm() {
+  vaultCardForm.hidden = false;
+  vaultCardLabel.focus();
+}
+
+function closeVaultCardForm() {
+  vaultCardForm.hidden = true;
+  resetVaultCardForm();
+}
+
+function loadVaultCards() {
+  invoke("vault_list_cards")
+    .then((cards) => {
+      vaultCardsList.innerHTML = "";
+      vaultCardsEmpty.classList.toggle("visible", cards.length === 0);
+      cards.forEach((card) => {
+        const li = document.createElement("li");
+        li.className = "library-item vault-card-item";
+
+        const text = document.createElement("div");
+        text.className = "library-item-text";
+
+        const label = document.createElement("div");
+        label.className = "library-item-title";
+        label.textContent = card.label;
+        text.appendChild(label);
+
+        const detail = document.createElement("div");
+        detail.className = "library-item-url";
+        detail.textContent = card.cardholder_name
+          ? `${card.cardholder_name} \u00B7 exp ${card.expiry_month}/${card.expiry_year}`
+          : `exp ${card.expiry_month}/${card.expiry_year}`;
+        text.appendChild(detail);
+
+        li.appendChild(text);
+
+        const number = document.createElement("span");
+        number.className = "vault-card-number";
+        number.textContent = `\u2022\u2022\u2022\u2022 ${card.last4}`;
+        li.appendChild(number);
+
+        const actions = document.createElement("div");
+        actions.className = "vault-login-actions";
+
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "library-item-action";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", () => {
+          invoke("vault_reveal_card", { label: card.label })
+            .then((full) => {
+              resetVaultCardForm();
+              vaultCardOriginalLabel.value = card.label;
+              vaultCardLabel.value = full.label;
+              vaultCardName.value = full.cardholder_name;
+              vaultCardNumber.value = full.card_number;
+              vaultCardMonth.value = full.expiry_month;
+              vaultCardYear.value = full.expiry_year;
+              vaultCardCvv.value = full.cvv;
+              openVaultCardForm();
+            })
+            .catch((err) => console.error("[kite] vault_reveal_card failed:", err));
+        });
+        actions.appendChild(editBtn);
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "library-item-remove";
+        deleteBtn.textContent = "\u00D7";
+        deleteBtn.title = "Delete saved card";
+        deleteBtn.addEventListener("click", () => {
+          invoke("vault_delete_card", { label: card.label })
+            .then(loadVaultCards)
+            .catch((err) => console.error("[kite] vault_delete_card failed:", err));
+        });
+        actions.appendChild(deleteBtn);
+
+        li.appendChild(actions);
+        vaultCardsList.appendChild(li);
+      });
+    })
+    .catch((err) => console.error("[kite] vault_list_cards failed:", err));
+}
+
+vaultAddCardBtn.addEventListener("click", () => {
+  resetVaultCardForm();
+  openVaultCardForm();
+});
+
+vaultCardCancelBtn.addEventListener("click", closeVaultCardForm);
+
+vaultCardForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  vaultCardError.textContent = "";
+  const label = vaultCardLabel.value.trim();
+  if (!label) {
+    vaultCardError.textContent = "Label is required.";
+    return;
+  }
+  if (!vaultCardNumber.value.trim()) {
+    vaultCardError.textContent = "Card number is required.";
+    return;
+  }
+  // Saving under a different label than the one this edit started from
+  // (originalLabel) creates a new entry rather than renaming the old one
+  // - label is the upsert key on the Rust side (see vault_save_card), so
+  // an actual rename needs the old entry deleted separately.
+  const originalLabel = vaultCardOriginalLabel.value;
+  invoke("vault_save_card", {
+    label,
+    cardholderName: vaultCardName.value.trim(),
+    cardNumber: vaultCardNumber.value.trim(),
+    expiryMonth: vaultCardMonth.value.trim(),
+    expiryYear: vaultCardYear.value.trim(),
+    cvv: vaultCardCvv.value.trim(),
+  })
+    .then(() => {
+      if (originalLabel && originalLabel !== label) {
+        return invoke("vault_delete_card", { label: originalLabel });
+      }
+    })
+    .then(() => {
+      closeVaultCardForm();
+      loadVaultCards();
+    })
+    .catch((err) => {
+      vaultCardError.textContent = String(err);
+    });
+});
+
+// --- Addresses ---
+//
+// Same edit-prefills-from-reveal pattern as cards above. Addresses aren't
+// as sensitive as a card/password, but the list still only shows a
+// summary (see VaultAddressSummary in main.rs) for the same "glance, not
+// a dump" reasoning as vault_list_logins.
+function resetVaultAddressForm() {
+  vaultAddressForm.reset();
+  vaultAddressOriginalLabel.value = "";
+  vaultAddressError.textContent = "";
+}
+
+function openVaultAddressForm() {
+  vaultAddressForm.hidden = false;
+  vaultAddressLabel.focus();
+}
+
+function closeVaultAddressForm() {
+  vaultAddressForm.hidden = true;
+  resetVaultAddressForm();
+}
+
+function loadVaultAddresses() {
+  invoke("vault_list_addresses")
+    .then((addresses) => {
+      vaultAddressesList.innerHTML = "";
+      vaultAddressesEmpty.classList.toggle("visible", addresses.length === 0);
+      addresses.forEach((address) => {
+        const li = document.createElement("li");
+        li.className = "library-item vault-address-item";
+
+        const text = document.createElement("div");
+        text.className = "library-item-text";
+
+        const label = document.createElement("div");
+        label.className = "library-item-title";
+        label.textContent = address.label;
+        text.appendChild(label);
+
+        const detail = document.createElement("div");
+        detail.className = "library-item-url";
+        const cityCountry = [address.city, address.country].filter(Boolean).join(", ");
+        detail.textContent = [address.full_name, cityCountry].filter(Boolean).join(" \u00B7 ");
+        text.appendChild(detail);
+
+        li.appendChild(text);
+
+        const actions = document.createElement("div");
+        actions.className = "vault-login-actions";
+
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "library-item-action";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", () => {
+          invoke("vault_reveal_address", { label: address.label })
+            .then((full) => {
+              resetVaultAddressForm();
+              vaultAddressOriginalLabel.value = address.label;
+              vaultAddressLabel.value = full.label;
+              vaultAddressName.value = full.full_name;
+              vaultAddressLine1.value = full.address_line1;
+              vaultAddressLine2.value = full.address_line2;
+              vaultAddressCity.value = full.city;
+              vaultAddressState.value = full.state;
+              vaultAddressPostal.value = full.postal_code;
+              vaultAddressCountry.value = full.country;
+              vaultAddressPhone.value = full.phone;
+              openVaultAddressForm();
+            })
+            .catch((err) => console.error("[kite] vault_reveal_address failed:", err));
+        });
+        actions.appendChild(editBtn);
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "library-item-remove";
+        deleteBtn.textContent = "\u00D7";
+        deleteBtn.title = "Delete saved address";
+        deleteBtn.addEventListener("click", () => {
+          invoke("vault_delete_address", { label: address.label })
+            .then(loadVaultAddresses)
+            .catch((err) => console.error("[kite] vault_delete_address failed:", err));
+        });
+        actions.appendChild(deleteBtn);
+
+        li.appendChild(actions);
+        vaultAddressesList.appendChild(li);
+      });
+    })
+    .catch((err) => console.error("[kite] vault_list_addresses failed:", err));
+}
+
+vaultAddAddressBtn.addEventListener("click", () => {
+  resetVaultAddressForm();
+  openVaultAddressForm();
+});
+
+vaultAddressCancelBtn.addEventListener("click", closeVaultAddressForm);
+
+vaultAddressForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  vaultAddressError.textContent = "";
+  const label = vaultAddressLabel.value.trim();
+  if (!label) {
+    vaultAddressError.textContent = "Label is required.";
+    return;
+  }
+  const originalLabel = vaultAddressOriginalLabel.value;
+  invoke("vault_save_address", {
+    label,
+    fullName: vaultAddressName.value.trim(),
+    addressLine1: vaultAddressLine1.value.trim(),
+    addressLine2: vaultAddressLine2.value.trim(),
+    city: vaultAddressCity.value.trim(),
+    state: vaultAddressState.value.trim(),
+    postalCode: vaultAddressPostal.value.trim(),
+    country: vaultAddressCountry.value.trim(),
+    phone: vaultAddressPhone.value.trim(),
+  })
+    .then(() => {
+      if (originalLabel && originalLabel !== label) {
+        return invoke("vault_delete_address", { label: originalLabel });
+      }
+    })
+    .then(() => {
+      closeVaultAddressForm();
+      loadVaultAddresses();
+    })
+    .catch((err) => {
+      vaultAddressError.textContent = String(err);
+    });
+});
+
 vaultCreateForm.addEventListener("submit", (e) => {
   e.preventDefault();
   vaultCreateError.textContent = "";
@@ -1255,7 +1567,11 @@ vaultUnlockForm.addEventListener("submit", (e) => {
 
 vaultLockBtn.addEventListener("click", () => {
   invoke("vault_lock")
-    .then(refreshVaultUI)
+    .then(() => {
+      closeVaultCardForm();
+      closeVaultAddressForm();
+      refreshVaultUI();
+    })
     .catch((err) => console.error("[kite] vault_lock failed:", err));
 });
 
@@ -1562,13 +1878,17 @@ function renderTabSearchResults(allTabs, query) {
     closeBtn.textContent = "\u2715";
     closeBtn.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      invoke("close_tab", { label: tab.label }).catch((err) =>
-        console.error("[kite] close_tab (tab search) failed:", err)
-      );
-      // Re-fetch rather than hand-splice the array, so a tab that was
-      // simultaneously closed elsewhere (e.g. Ctrl+W) can't desync this
-      // list from what actually still exists.
-      invoke("get_tabs")
+      // Chained, not fired in parallel: close_tab is async (it's Rust's
+      // "async fn close_tab", awaiting webview teardown), so firing
+      // get_tabs alongside it - rather than after it resolves - could
+      // read the tab list before the close actually landed, showing the
+      // just-closed tab still sitting there until some later action
+      // happened to re-render. .catch() before .then() here means a
+      // failed close_tab still refreshes the list rather than leaving it
+      // stuck silently.
+      invoke("close_tab", { label: tab.label })
+        .catch((err) => console.error("[kite] close_tab (tab search) failed:", err))
+        .then(() => invoke("get_tabs"))
         .then(({ tabs }) => renderTabSearchResults(tabs, tabSearchInput.value))
         .catch((err) => console.error("[kite] get_tabs (tab search) failed:", err));
     });
