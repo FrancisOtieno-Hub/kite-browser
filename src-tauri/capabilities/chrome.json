@@ -44,6 +44,8 @@
     "allow-choose-downloads-dir",
     "allow-show-library",
     "allow-hide-library",
+    "allow-show-tab-search",
+    "allow-hide-tab-search",
     "allow-toggle-find-in-page",
     "allow-zoom-in",
     "allow-zoom-out",
