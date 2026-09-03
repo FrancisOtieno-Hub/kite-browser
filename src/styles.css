@@ -1030,6 +1030,58 @@ body.private-active .shield-badge.site-off {
   min-height: 15px;
 }
 
+/* Payment methods / Addresses share the Passwords view's vault-form
+   look, but need a couple of things the master-password forms above
+   never did: a heading of their own sitting below the (already-rendered)
+   Saved logins list rather than at the top of the section, several
+   fields side by side (expiry month/year/CVV; city/state; postal/
+   country) rather than one field per line, and an explicit Cancel next
+   to Save since - unlike creating/unlocking the vault - adding a card or
+   address is something you can back out of. */
+.vault-subsection {
+  margin-top: 28px;
+}
+
+.vault-inline-form {
+  max-width: 420px;
+  margin-bottom: 14px;
+}
+
+.vault-form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.vault-form-row .settings-text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.vault-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Saved card/address rows aren't navigation targets, same reasoning as
+   .vault-login-item overriding the default .library-item hover/cursor. */
+.vault-card-item,
+.vault-address-item {
+  cursor: default;
+}
+
+.vault-card-item:hover,
+.vault-address-item:hover {
+  background: transparent;
+}
+
+.vault-card-number {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  color: var(--text);
+  flex-shrink: 0;
+  min-width: 90px;
+}
+
 /* --- New-tab right-click menu (+ button) --- */
 
 .new-tab-menu {
@@ -1078,12 +1130,23 @@ body.private-active .shield-badge.site-off {
 /* Tab search / command palette (Ctrl+K) - a centered floating panel over
    the whole chrome, distinct from the library's docked side panel since
    this is meant to be opened, used, and dismissed in a couple of
-   keystrokes without disturbing whatever page you were on. */
+   keystrokes without disturbing whatever page you were on.
+
+   Solid background, not a translucent dark tint: show_tab_search parks
+   the active tab's own content webview off-screen so this overlay can
+   render above the whole window at all (same mechanism show_library
+   uses - see that command's comment in main.rs) - there's no real page
+   content left showing through underneath to dim. A translucent tint
+   over nothing just looks like a wash over blank white, which reads as
+   "the page vanished" rather than as a deliberate screen, so this uses
+   an opaque, on-brand surface instead and treats the transition in/out
+   as its own moment (see the animation below) rather than pretending
+   it's a dimmer sitting on top of content that's actually still there. */
 .tab-search-overlay {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(22, 33, 58, 0.28);
+  background: var(--tab-bar-bg);
   z-index: 2000;
   align-items: flex-start;
   justify-content: center;
@@ -1092,6 +1155,31 @@ body.private-active .shield-badge.site-off {
 
 .tab-search-overlay.open {
   display: flex;
+  animation: tab-search-fade-in 0.12s ease-out;
+}
+
+@keyframes tab-search-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.tab-search-overlay.open .tab-search-box {
+  animation: tab-search-rise-in 0.14s ease-out;
+}
+
+@keyframes tab-search-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .tab-search-box {
