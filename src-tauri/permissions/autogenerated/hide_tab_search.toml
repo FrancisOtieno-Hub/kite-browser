@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hide-tab-search"
+description = "Enables the hide_tab_search command without any pre-configured scope."
+commands.allow = ["hide_tab_search"]
+
+[[permission]]
+identifier = "deny-hide-tab-search"
+description = "Denies the hide_tab_search command without any pre-configured scope."
+commands.deny = ["hide_tab_search"]

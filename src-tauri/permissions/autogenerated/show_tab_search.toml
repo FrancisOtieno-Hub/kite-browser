@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-tab-search"
+description = "Enables the show_tab_search command without any pre-configured scope."
+commands.allow = ["show_tab_search"]
+
+[[permission]]
+identifier = "deny-show-tab-search"
+description = "Denies the show_tab_search command without any pre-configured scope."
+commands.deny = ["show_tab_search"]
