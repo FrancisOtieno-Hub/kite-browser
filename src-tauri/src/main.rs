@@ -302,11 +302,86 @@ struct AutofillAvailablePayload {
 // The plaintext shape encrypted into an EncryptedVaultEntry's ciphertext
 // (see vault_save_login) - never written to disk except inside that
 // ciphertext, and never sent to any webview.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct VaultEntryPlaintext {
     host: String,
     username: String,
     password: String,
+}
+
+// Payment card, saved directly through the Library's "Payment methods"
+// form (unlike logins, there's no page to capture this from - a card
+// number typed into a checkout page isn't something Kite watches for).
+// `label` is a user-chosen nickname ("Personal Visa") used to find/update/
+// delete this specific card, since unlike a login there's no natural
+// unique key (multiple cards can share a cardholder name).
+#[derive(Clone, Serialize, Deserialize)]
+struct VaultCardPlaintext {
+    label: String,
+    cardholder_name: String,
+    // Digits only, no spaces/dashes - normalized once on save (see
+    // vault_save_card) so display-side formatting is purely a UI concern
+    // and every comparison/storage path only ever deals with one shape.
+    card_number: String,
+    expiry_month: String, // "01".."12"
+    expiry_year: String,  // 4-digit, e.g. "2029"
+    cvv: String,
+}
+
+// Mailing/shipping address, saved the same way as a card (direct entry
+// via the Library form, no page-capture). `label` plays the same role as
+// VaultCardPlaintext's.
+#[derive(Clone, Serialize, Deserialize)]
+struct VaultAddressPlaintext {
+    label: String,
+    full_name: String,
+    address_line1: String,
+    address_line2: String,
+    city: String,
+    state: String,
+    postal_code: String,
+    country: String,
+    phone: String,
+}
+
+// Every EncryptedVaultEntry's ciphertext decrypts to one of these three
+// shapes. `entries` on VaultFile stays a single flat Vec across all three
+// kinds - splitting into three separate Vecs would mean three separate
+// migrations and three places for save/list/delete logic to get out of
+// sync, for no real benefit at the scale a personal vault reaches.
+//
+// Internally tagged (`kind` field) so new saves of any type are
+// self-describing on disk - but every login entry saved *before* this
+// enum existed has no such tag at all (see VaultEntryPlaintext's own
+// original bare shape). parse_vault_record's fallback path is what keeps
+// those old entries readable with zero migration step.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+enum VaultRecordPlaintext {
+    #[serde(rename = "login")]
+    Login(VaultEntryPlaintext),
+    #[serde(rename = "card")]
+    Card(VaultCardPlaintext),
+    #[serde(rename = "address")]
+    Address(VaultAddressPlaintext),
+}
+
+// Single entry point for decrypting *any* vault entry's plaintext,
+// regardless of which of the three kinds it is or whether it predates the
+// "kind" tag existing at all. Every list/find/reveal/delete/autofill
+// command below goes through this rather than deserializing directly, so
+// there's exactly one place that has to know about the untagged-legacy-
+// login fallback.
+fn parse_vault_record(bytes: &[u8]) -> Option<VaultRecordPlaintext> {
+    if let Ok(tagged) = serde_json::from_slice::<VaultRecordPlaintext>(bytes) {
+        return Some(tagged);
+    }
+    // No "kind" field at all - this can only be a login saved before
+    // cards/addresses existed, back when VaultEntryPlaintext's bare
+    // {host, username, password} shape was the only thing ever stored.
+    serde_json::from_slice::<VaultEntryPlaintext>(bytes)
+        .ok()
+        .map(VaultRecordPlaintext::Login)
 }
 
 // Caches fetched favicons keyed by the icon's own URL (not the page URL,
@@ -1173,7 +1248,8 @@ fn encrypt_and_store_login(
         username: capture.username,
         password: capture.password,
     };
-    let plaintext_bytes = serde_json::to_vec(&plaintext).map_err(|e| e.to_string())?;
+    let plaintext_bytes = serde_json::to_vec(&VaultRecordPlaintext::Login(plaintext.clone()))
+        .map_err(|e| e.to_string())?;
     let (nonce, ciphertext) = vault_encrypt(key, &plaintext_bytes)?;
 
     // Decrypting every existing entry just to find a host+username match
@@ -1184,10 +1260,12 @@ fn encrypt_and_store_login(
     let existing_index = file.entries.iter().position(|e| {
         vault_decrypt(key, &e.nonce, &e.ciphertext)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<VaultEntryPlaintext>(&bytes).ok())
-            .is_some_and(|existing| {
-                existing.host.eq_ignore_ascii_case(&plaintext.host) && existing.username == plaintext.username
-            })
+            .and_then(|bytes| parse_vault_record(&bytes))
+            .is_some_and(|rec| matches!(
+                rec,
+                VaultRecordPlaintext::Login(existing)
+                    if existing.host.eq_ignore_ascii_case(&plaintext.host) && existing.username == plaintext.username
+            ))
     });
 
     let new_entry = EncryptedVaultEntry { nonce, ciphertext };
@@ -1254,13 +1332,19 @@ fn find_vault_entry_index(
     file.entries.iter().position(|e| {
         vault_decrypt(key, &e.nonce, &e.ciphertext)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<VaultEntryPlaintext>(&bytes).ok())
-            .is_some_and(|existing| existing.host.eq_ignore_ascii_case(host) && existing.username == username)
+            .and_then(|bytes| parse_vault_record(&bytes))
+            .is_some_and(|rec| matches!(
+                rec,
+                VaultRecordPlaintext::Login(existing)
+                    if existing.host.eq_ignore_ascii_case(host) && existing.username == username
+            ))
     })
 }
 
 // Populates the Passwords library view's list - see VaultLoginSummary's
-// own comment for why this never includes a password.
+// own comment for why this never includes a password. Cards/addresses
+// living in the same `entries` Vec are simply skipped here (filter_map
+// discards anything parse_vault_record doesn't resolve to a Login).
 #[tauri::command]
 fn vault_list_logins(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Vec<VaultLoginSummary>, String> {
     require_chrome(&webview)?;
@@ -1275,10 +1359,13 @@ fn vault_list_logins(webview: tauri::Webview, app: tauri::AppHandle) -> Result<V
         .filter_map(|e| {
             vault_decrypt(&key, &e.nonce, &e.ciphertext)
                 .ok()
-                .and_then(|bytes| serde_json::from_slice::<VaultEntryPlaintext>(&bytes).ok())
-                .map(|p| VaultLoginSummary {
-                    host: p.host,
-                    username: p.username,
+                .and_then(|bytes| parse_vault_record(&bytes))
+                .and_then(|rec| match rec {
+                    VaultRecordPlaintext::Login(p) => Some(VaultLoginSummary {
+                        host: p.host,
+                        username: p.username,
+                    }),
+                    _ => None,
                 })
         })
         .collect();
@@ -1340,6 +1427,283 @@ fn vault_delete_login(webview: tauri::Webview, app: tauri::AppHandle, host: Stri
     let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
     let mut file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
     let idx = find_vault_entry_index(&file, &key, &host, &username).ok_or_else(|| "Login not found.".to_string())?;
+    file.entries.remove(idx);
+    save_vault_file(&vst.file_path, &file)
+}
+
+// --- Payment cards & addresses ---
+//
+// Live in the exact same encrypted `entries` Vec as logins (see
+// VaultRecordPlaintext) - same file, same master password, same
+// Argon2id-derived key, same "nothing plaintext touches disk" guarantee.
+// Unlike logins there's no page-capture flow (see vault_save_login): the
+// person types these directly into a Library form, so save/reveal here
+// just take the full field set as command arguments.
+
+// Mirrors find_vault_entry_index but for a card, keyed by its
+// user-chosen `label` (the natural unique key here, since unlike a login
+// there's no host+username pair to match on).
+fn find_card_index(file: &VaultFile, key: &[u8; VAULT_KEY_LEN], label: &str) -> Option<usize> {
+    file.entries.iter().position(|e| {
+        vault_decrypt(key, &e.nonce, &e.ciphertext)
+            .ok()
+            .and_then(|bytes| parse_vault_record(&bytes))
+            .is_some_and(|rec| matches!(rec, VaultRecordPlaintext::Card(c) if c.label == label))
+    })
+}
+
+fn find_address_index(file: &VaultFile, key: &[u8; VAULT_KEY_LEN], label: &str) -> Option<usize> {
+    file.entries.iter().position(|e| {
+        vault_decrypt(key, &e.nonce, &e.ciphertext)
+            .ok()
+            .and_then(|bytes| parse_vault_record(&bytes))
+            .is_some_and(|rec| matches!(rec, VaultRecordPlaintext::Address(a) if a.label == label))
+    })
+}
+
+// What the "Payment methods" list actually shows - deliberately never the
+// full card number or CVV, same reasoning as VaultLoginSummary excluding
+// the password. `last4` is enough to tell cards apart at a glance; the
+// full number only ever leaves Rust via vault_reveal_card (an explicit
+// "Show" click) or the autofill script itself.
+#[derive(Clone, Serialize)]
+struct VaultCardSummary {
+    label: String,
+    cardholder_name: String,
+    last4: String,
+    expiry_month: String,
+    expiry_year: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VaultAddressSummary {
+    label: String,
+    full_name: String,
+    city: String,
+    country: String,
+}
+
+// Backs the "Add card"/"Edit card" form. `label` doubles as the update
+// key: saving again with a label that already exists overwrites that
+// card in place (same upsert pattern as encrypt_and_store_login),
+// otherwise it's appended as new.
+#[tauri::command]
+fn vault_save_card(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    label: String,
+    cardholder_name: String,
+    card_number: String,
+    expiry_month: String,
+    expiry_year: String,
+    cvv: String,
+) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let mut file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+
+    // Strip everything but digits so "4111 1111 1111 1111" (however the
+    // person typed or pasted it) is stored identically to
+    // "4111111111111111" - spacing is purely a display concern, handled
+    // client-side, never part of what's actually encrypted.
+    let digits_only: String = card_number.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits_only.is_empty() {
+        return Err("Card number is required.".to_string());
+    }
+
+    let record = VaultRecordPlaintext::Card(VaultCardPlaintext {
+        label: label.clone(),
+        cardholder_name,
+        card_number: digits_only,
+        expiry_month,
+        expiry_year,
+        cvv,
+    });
+    let bytes = serde_json::to_vec(&record).map_err(|e| e.to_string())?;
+    let (nonce, ciphertext) = vault_encrypt(&key, &bytes)?;
+    let new_entry = EncryptedVaultEntry { nonce, ciphertext };
+
+    match find_card_index(&file, &key, &label) {
+        Some(i) => file.entries[i] = new_entry,
+        None => file.entries.push(new_entry),
+    }
+    save_vault_file(&vst.file_path, &file)
+}
+
+#[tauri::command]
+fn vault_save_address(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    label: String,
+    full_name: String,
+    address_line1: String,
+    address_line2: String,
+    city: String,
+    state: String,
+    postal_code: String,
+    country: String,
+    phone: String,
+) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let mut file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+
+    let record = VaultRecordPlaintext::Address(VaultAddressPlaintext {
+        label: label.clone(),
+        full_name,
+        address_line1,
+        address_line2,
+        city,
+        state,
+        postal_code,
+        country,
+        phone,
+    });
+    let bytes = serde_json::to_vec(&record).map_err(|e| e.to_string())?;
+    let (nonce, ciphertext) = vault_encrypt(&key, &bytes)?;
+    let new_entry = EncryptedVaultEntry { nonce, ciphertext };
+
+    match find_address_index(&file, &key, &label) {
+        Some(i) => file.entries[i] = new_entry,
+        None => file.entries.push(new_entry),
+    }
+    save_vault_file(&vst.file_path, &file)
+}
+
+// Populates the "Payment methods" list - cards/logins/addresses share one
+// entries Vec (see the module comment above), so anything that isn't a
+// Card is simply skipped.
+#[tauri::command]
+fn vault_list_cards(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Vec<VaultCardSummary>, String> {
+    require_chrome(&webview)?;
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+
+    let mut cards: Vec<VaultCardSummary> = file
+        .entries
+        .iter()
+        .filter_map(|e| {
+            vault_decrypt(&key, &e.nonce, &e.ciphertext)
+                .ok()
+                .and_then(|bytes| parse_vault_record(&bytes))
+        })
+        .filter_map(|rec| match rec {
+            VaultRecordPlaintext::Card(c) => {
+                let last4 = if c.card_number.len() >= 4 {
+                    c.card_number[c.card_number.len() - 4..].to_string()
+                } else {
+                    c.card_number.clone()
+                };
+                Some(VaultCardSummary {
+                    label: c.label,
+                    cardholder_name: c.cardholder_name,
+                    last4,
+                    expiry_month: c.expiry_month,
+                    expiry_year: c.expiry_year,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    cards.sort_by(|a, b| a.label.cmp(&b.label));
+    Ok(cards)
+}
+
+#[tauri::command]
+fn vault_list_addresses(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Vec<VaultAddressSummary>, String> {
+    require_chrome(&webview)?;
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+
+    let mut addresses: Vec<VaultAddressSummary> = file
+        .entries
+        .iter()
+        .filter_map(|e| {
+            vault_decrypt(&key, &e.nonce, &e.ciphertext)
+                .ok()
+                .and_then(|bytes| parse_vault_record(&bytes))
+        })
+        .filter_map(|rec| match rec {
+            VaultRecordPlaintext::Address(a) => Some(VaultAddressSummary {
+                label: a.label,
+                full_name: a.full_name,
+                city: a.city,
+                country: a.country,
+            }),
+            _ => None,
+        })
+        .collect();
+    addresses.sort_by(|a, b| a.label.cmp(&b.label));
+    Ok(addresses)
+}
+
+// Backs the "Show" toggle on a saved card row, and is also what the
+// (Stage 2) autofill trigger will call to get the full number/CVV to
+// write into a checkout page - same "only an explicit action reveals the
+// sensitive fields" rule as vault_reveal_login.
+#[tauri::command]
+fn vault_reveal_card(webview: tauri::Webview, app: tauri::AppHandle, label: String) -> Result<VaultCardPlaintext, String> {
+    require_chrome(&webview)?;
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+    let idx = find_card_index(&file, &key, &label).ok_or_else(|| "Card not found.".to_string())?;
+    let bytes = vault_decrypt(&key, &file.entries[idx].nonce, &file.entries[idx].ciphertext)?;
+    match parse_vault_record(&bytes) {
+        Some(VaultRecordPlaintext::Card(c)) => Ok(c),
+        _ => Err("Card not found.".to_string()),
+    }
+}
+
+// Addresses aren't secret the way a password/CVV is, but reveal still
+// goes through its own explicit command (rather than folding full details
+// into vault_list_addresses) for the same reason vault_list_logins holds
+// back the password - the list view is a glance, not a dump of everything
+// stored, and Stage 2's autofill trigger needs exactly this full shape.
+#[tauri::command]
+fn vault_reveal_address(webview: tauri::Webview, app: tauri::AppHandle, label: String) -> Result<VaultAddressPlaintext, String> {
+    require_chrome(&webview)?;
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+    let idx = find_address_index(&file, &key, &label).ok_or_else(|| "Address not found.".to_string())?;
+    let bytes = vault_decrypt(&key, &file.entries[idx].nonce, &file.entries[idx].ciphertext)?;
+    match parse_vault_record(&bytes) {
+        Some(VaultRecordPlaintext::Address(a)) => Ok(a),
+        _ => Err("Address not found.".to_string()),
+    }
+}
+
+#[tauri::command]
+fn vault_delete_card(webview: tauri::Webview, app: tauri::AppHandle, label: String) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let mut file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+    let idx = find_card_index(&file, &key, &label).ok_or_else(|| "Card not found.".to_string())?;
+    file.entries.remove(idx);
+    save_vault_file(&vst.file_path, &file)
+}
+
+#[tauri::command]
+fn vault_delete_address(webview: tauri::Webview, app: tauri::AppHandle, label: String) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let mut file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+    let idx = find_address_index(&file, &key, &label).ok_or_else(|| "Address not found.".to_string())?;
     file.entries.remove(idx);
     save_vault_file(&vst.file_path, &file)
 }
@@ -2639,12 +3003,12 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
 }
 
 fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
-    let (prev_active, win_w, win_h, library_tab) = {
+    let (prev_active, win_w, win_h, library_tab, tab_search_open) = {
         let state = app.state::<SharedTabState>();
         let mut st = state.lock_recover();
         let prev = st.active.clone();
         st.active = label.to_string();
-        (prev, st.window_size.0, st.window_size.1, st.library_tab.clone())
+        (prev, st.window_size.0, st.window_size.1, st.library_tab.clone(), st.tab_search_open)
     };
 
     // The Library Panel (History/Bookmarks/Downloads/Settings) is a
@@ -2678,8 +3042,15 @@ fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
         // closed, and reopens automatically if the user comes back to
         // that tab. Chrome being shrunk means none of the frontend's
         // still-"open" state is even visible in the meantime regardless.
-        if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
-            let _ = chrome.set_size(LogicalSize::new(win_w, CHROME_HEIGHT));
+        //
+        // Skipped while tab search is open: chrome needs to stay
+        // full-window for the overlay regardless of library_tab state in
+        // that case, and hide_tab_search (not this function) is what
+        // shrinks it back down once the overlay itself actually closes.
+        if !tab_search_open {
+            if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
+                let _ = chrome.set_size(LogicalSize::new(win_w, CHROME_HEIGHT));
+            }
         }
     }
 
@@ -2689,7 +3060,17 @@ fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
         }
     }
 
-    if !is_library_tab {
+    // While tab search is open (see show_tab_search/hide_tab_search), the
+    // active tab's own content webview must stay parked off-screen
+    // regardless of which tab just became active - this is exactly the
+    // bug that surfaced when closing the currently-active tab from the
+    // search overlay: activate_tab picks a new active tab under the hood,
+    // and without this guard it would immediately un-park that new tab's
+    // webview and show it, burying the still-open overlay underneath it
+    // (content webviews sit above chrome in z-order - see
+    // show_tab_search's own comment). The overlay's own close path
+    // (hide_tab_search) is what un-parks whatever tab is active *then*.
+    if !is_library_tab && !tab_search_open {
         if let Some(webview) = app.get_webview(label) {
             webview
                 .set_position(visible_position())
@@ -3141,6 +3522,42 @@ fn watch_for_requests(webview: &tauri::Webview, app: tauri::AppHandle, label: St
     });
 }
 
+// Vault must already be unlocked for "Fill card"/"Fill address" items to
+// appear at all in the editable-field context menu below - offering
+// items that would just error out with "Vault is locked" the instant
+// they're clicked is worse than simply not offering them, so a locked
+// (or empty) vault means the menu doesn't grow these entries rather than
+// showing them disabled. Logins are skipped here entirely - a login has
+// its own dedicated autofill prompt (see report_login_form_present) tied
+// to the page's actual login form, not this generic right-click path.
+fn vault_autofill_menu_labels(app: &tauri::AppHandle) -> (Vec<String>, Vec<String>) {
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let Some(key) = vst.key else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(file) = load_vault_file(&vst.file_path) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut card_labels = Vec::new();
+    let mut address_labels = Vec::new();
+    for e in &file.entries {
+        if let Some(rec) = vault_decrypt(&key, &e.nonce, &e.ciphertext)
+            .ok()
+            .and_then(|bytes| parse_vault_record(&bytes))
+        {
+            match rec {
+                VaultRecordPlaintext::Card(c) => card_labels.push(c.label),
+                VaultRecordPlaintext::Address(a) => address_labels.push(a.label),
+                VaultRecordPlaintext::Login(_) => {}
+            }
+        }
+    }
+    card_labels.sort();
+    address_labels.sort();
+    (card_labels, address_labels)
+}
+
 // Builds the native popup menu shown for a given right-click target.
 // target_type is already validated against a fixed set by the caller
 // (report_context_menu) before reaching here.
@@ -3209,6 +3626,38 @@ fn build_context_menu(
                     .map_err(|e| e.to_string())?,
             ),
     };
+
+    // Appended after the match (rather than folded into the "editable"
+    // arms above) because the number of items depends on how many cards/
+    // addresses are actually saved - a fixed method-chain can't express
+    // "one .item() call per saved label" the way a plain loop with
+    // reassignment can. A flat list ("Fill card: Personal Visa", "Fill
+    // card: Work Amex", ...) rather than a submenu keeps this simple and
+    // avoids introducing Submenu's own builder type into this function's
+    // signature for what's realistically a short, glanceable list.
+    if target_type == "editable" {
+        let (card_labels, address_labels) = vault_autofill_menu_labels(app);
+        if !card_labels.is_empty() || !address_labels.is_empty() {
+            builder = builder.separator();
+            for label in &card_labels {
+                let id = format!("ctx-fill-card:{label}");
+                let text = format!("Fill card: {label}");
+                builder = builder.item(
+                    &MenuItem::with_id(app, id.as_str(), text.as_str(), true, None::<&str>)
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            for label in &address_labels {
+                let id = format!("ctx-fill-address:{label}");
+                let text = format!("Fill address: {label}");
+                builder = builder.item(
+                    &MenuItem::with_id(app, id.as_str(), text.as_str(), true, None::<&str>)
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+        }
+    }
+
     builder.build().map_err(|e| e.to_string())
 }
 
@@ -3341,8 +3790,219 @@ fn handle_context_menu_event(app: &tauri::AppHandle, id: &str) {
                 let _ = w.eval("location.reload()");
             }
         }
+        _ if id.starts_with("ctx-fill-card:") => {
+            let label = id.trim_start_matches("ctx-fill-card:").to_string();
+            if let Err(e) = fill_card_into_webview(app, &target.source_label, &label) {
+                eprintln!("[kite] ctx-fill-card failed: {e}");
+            }
+        }
+        _ if id.starts_with("ctx-fill-address:") => {
+            let label = id.trim_start_matches("ctx-fill-address:").to_string();
+            if let Err(e) = fill_address_into_webview(app, &target.source_label, &label) {
+                eprintln!("[kite] ctx-fill-address failed: {e}");
+            }
+        }
         _ => {}
     }
+}
+
+// Decrypts the chosen saved card and writes it into whatever field was
+// actually right-clicked (see build_card_autofill_script for how the
+// script relocates that field) - targets source_label specifically
+// (the exact tab the right-click happened in) rather than "whichever tab
+// is active", same reasoning vault_autofill gives for doing the same
+// with tab_label.
+fn fill_card_into_webview(app: &tauri::AppHandle, source_label: &str, label: &str) -> Result<(), String> {
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+    let idx = find_card_index(&file, &key, label).ok_or_else(|| "Card not found.".to_string())?;
+    let bytes = vault_decrypt(&key, &file.entries[idx].nonce, &file.entries[idx].ciphertext)?;
+    let card = match parse_vault_record(&bytes) {
+        Some(VaultRecordPlaintext::Card(c)) => c,
+        _ => return Err("Card not found.".to_string()),
+    };
+    drop(vst);
+
+    let target = app.get_webview(source_label).ok_or_else(|| "Tab not found.".to_string())?;
+    let script = build_card_autofill_script(&card);
+    target.eval(&script).map_err(|e| e.to_string())
+}
+
+fn fill_address_into_webview(app: &tauri::AppHandle, source_label: &str, label: &str) -> Result<(), String> {
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst.key.ok_or_else(|| "Vault is locked.".to_string())?;
+    let file = load_vault_file(&vst.file_path).ok_or_else(|| "Vault file missing.".to_string())?;
+    let idx = find_address_index(&file, &key, label).ok_or_else(|| "Address not found.".to_string())?;
+    let bytes = vault_decrypt(&key, &file.entries[idx].nonce, &file.entries[idx].ciphertext)?;
+    let address = match parse_vault_record(&bytes) {
+        Some(VaultRecordPlaintext::Address(a)) => a,
+        _ => return Err("Address not found.".to_string()),
+    };
+    drop(vst);
+
+    let target = app.get_webview(source_label).ok_or_else(|| "Tab not found.".to_string())?;
+    let script = build_address_autofill_script(&address);
+    target.eval(&script).map_err(|e| e.to_string())
+}
+
+// Unlike build_autofill_script (which anchors on the page's one password
+// field), a checkout/shipping form has no single unambiguous anchor -
+// name, number, expiry and CVV are frequently four separate inputs, or
+// even a <select> for the expiry month/year. This anchors on whatever was
+// actually right-clicked instead: WebView2 keeps DOM focus on the
+// right-clicked element while Kite's native popup menu is open (the same
+// assumption ctx-paste already relies on for document.execCommand to
+// land in the right place), so document.activeElement is still that
+// field by the time this eval runs, even though the click happened in a
+// different native surface (the menu) in between.
+//
+// Field-finding prefers the standardized autocomplete token (cc-name,
+// cc-number, etc.) and falls back to sniffing name/id/placeholder text -
+// same two-tier approach build_autofill_script uses for the username
+// field, since plenty of real checkout forms skip autocomplete tokens
+// entirely. This is still heuristic, not exhaustive - an unusual form
+// layout can defeat it, same honest limitation as any browser's built-in
+// payment autofill.
+fn build_card_autofill_script(card: &VaultCardPlaintext) -> String {
+    let name_json = serde_json::to_string(&card.cardholder_name).unwrap_or_else(|_| "\"\"".to_string());
+    let number_json = serde_json::to_string(&card.card_number).unwrap_or_else(|_| "\"\"".to_string());
+    let month_json = serde_json::to_string(&card.expiry_month).unwrap_or_else(|_| "\"\"".to_string());
+    let year_json = serde_json::to_string(&card.expiry_year).unwrap_or_else(|_| "\"\"".to_string());
+    let cvv_json = serde_json::to_string(&card.cvv).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        r#"(function() {{
+  function setNativeValue(el, value) {{
+    const proto =
+      el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype :
+      el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype :
+      window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }}
+
+  function findField(form, autocompleteTokens, keywordRegex) {{
+    const fields = Array.from(form.querySelectorAll('input, select, textarea'));
+    for (const token of autocompleteTokens) {{
+      const match = fields.find((el) => (el.autocomplete || '').toLowerCase() === token);
+      if (match) return match;
+    }}
+    if (keywordRegex) {{
+      return fields.find(
+        (el) => keywordRegex.test(el.name || '') || keywordRegex.test(el.id || '') || keywordRegex.test(el.placeholder || '')
+      ) || null;
+    }}
+    return null;
+  }}
+
+  const active = document.activeElement;
+  const form = (active && active.closest && active.closest('form')) || document;
+
+  const nameField = findField(form, ['cc-name'], /card.*name|cardholder/i);
+  const numberField = findField(form, ['cc-number'], /card.*num|cc-?num/i);
+  const monthField = findField(form, ['cc-exp-month'], /exp.*month/i);
+  const yearField = findField(form, ['cc-exp-year'], /exp.*year/i);
+  const combinedExpField = findField(form, ['cc-exp'], /^exp(iry)?$|exp.*date/i);
+  const cvvField = findField(form, ['cc-csc'], /cvv|cvc|security.*code/i);
+
+  const name = {name_json};
+  const number = {number_json};
+  const month = {month_json};
+  const year = {year_json};
+  const cvv = {cvv_json};
+  const yearShort = year.length === 4 ? year.slice(2) : year;
+
+  if (nameField && name) setNativeValue(nameField, name);
+  if (numberField && number) setNativeValue(numberField, number);
+
+  if (monthField && month) {{
+    setNativeValue(monthField, monthField.tagName === 'SELECT' && !Array.from(monthField.options).some((o) => o.value === month)
+      ? String(parseInt(month, 10))
+      : month);
+  }}
+  if (yearField && year) {{
+    const opts = yearField.tagName === 'SELECT' ? Array.from(yearField.options).map((o) => o.value) : null;
+    setNativeValue(yearField, opts && !opts.includes(year) && opts.includes(yearShort) ? yearShort : year);
+  }}
+  if (!monthField && !yearField && combinedExpField && month && year) {{
+    setNativeValue(combinedExpField, `${{month}}/${{yearShort}}`);
+  }}
+  if (cvvField && cvv) setNativeValue(cvvField, cvv);
+}})();"#
+    )
+}
+
+fn build_address_autofill_script(address: &VaultAddressPlaintext) -> String {
+    let name_json = serde_json::to_string(&address.full_name).unwrap_or_else(|_| "\"\"".to_string());
+    let line1_json = serde_json::to_string(&address.address_line1).unwrap_or_else(|_| "\"\"".to_string());
+    let line2_json = serde_json::to_string(&address.address_line2).unwrap_or_else(|_| "\"\"".to_string());
+    let city_json = serde_json::to_string(&address.city).unwrap_or_else(|_| "\"\"".to_string());
+    let state_json = serde_json::to_string(&address.state).unwrap_or_else(|_| "\"\"".to_string());
+    let postal_json = serde_json::to_string(&address.postal_code).unwrap_or_else(|_| "\"\"".to_string());
+    let country_json = serde_json::to_string(&address.country).unwrap_or_else(|_| "\"\"".to_string());
+    let phone_json = serde_json::to_string(&address.phone).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        r#"(function() {{
+  function setNativeValue(el, value) {{
+    const proto =
+      el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype :
+      el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype :
+      window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }}
+
+  function findField(form, autocompleteTokens, keywordRegex) {{
+    const fields = Array.from(form.querySelectorAll('input, select, textarea'));
+    for (const token of autocompleteTokens) {{
+      const match = fields.find((el) => (el.autocomplete || '').toLowerCase() === token);
+      if (match) return match;
+    }}
+    if (keywordRegex) {{
+      return fields.find(
+        (el) => keywordRegex.test(el.name || '') || keywordRegex.test(el.id || '') || keywordRegex.test(el.placeholder || '')
+      ) || null;
+    }}
+    return null;
+  }}
+
+  const active = document.activeElement;
+  const form = (active && active.closest && active.closest('form')) || document;
+
+  const nameField = findField(form, ['name'], /full.*name|^name$/i);
+  const line1Field = findField(form, ['address-line1'], /address.*(line)?.?1|street/i);
+  const line2Field = findField(form, ['address-line2'], /address.*(line)?.?2|apt|suite|unit/i);
+  const cityField = findField(form, ['address-level2'], /city|town/i);
+  const stateField = findField(form, ['address-level1'], /state|province|region/i);
+  const postalField = findField(form, ['postal-code'], /postal|zip/i);
+  const countryField = findField(form, ['country', 'country-name'], /country/i);
+  const phoneField = findField(form, ['tel'], /phone|tel(ephone)?/i);
+
+  const name = {name_json};
+  const line1 = {line1_json};
+  const line2 = {line2_json};
+  const city = {city_json};
+  const state = {state_json};
+  const postal = {postal_json};
+  const country = {country_json};
+  const phone = {phone_json};
+
+  if (nameField && name) setNativeValue(nameField, name);
+  if (line1Field && line1) setNativeValue(line1Field, line1);
+  if (line2Field && line2) setNativeValue(line2Field, line2);
+  if (cityField && city) setNativeValue(cityField, city);
+  if (stateField && state) setNativeValue(stateField, state);
+  if (postalField && postal) setNativeValue(postalField, postal);
+  if (countryField && country) setNativeValue(countryField, country);
+  if (phoneField && phone) setNativeValue(phoneField, phone);
+}})();"#
+    )
 }
 
 fn active_webview(app: &tauri::AppHandle) -> Result<tauri::webview::Webview, String> {
@@ -4328,7 +4988,11 @@ fn report_login_form_present(webview: tauri::Webview, app: tauri::AppHandle, hos
             .filter_map(|e| {
                 vault_decrypt(&key, &e.nonce, &e.ciphertext)
                     .ok()
-                    .and_then(|bytes| serde_json::from_slice::<VaultEntryPlaintext>(&bytes).ok())
+                    .and_then(|bytes| parse_vault_record(&bytes))
+                    .and_then(|rec| match rec {
+                        VaultRecordPlaintext::Login(p) => Some(p),
+                        _ => None,
+                    })
                     .filter(|p| p.host.eq_ignore_ascii_case(&host))
                     .map(|p| p.username)
             })
@@ -4519,12 +5183,14 @@ fn login_already_saved(app: &tauri::AppHandle, host: &str, username: &str, passw
     file.entries.iter().any(|e| {
         vault_decrypt(&key, &e.nonce, &e.ciphertext)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<VaultEntryPlaintext>(&bytes).ok())
-            .is_some_and(|existing| {
-                existing.host.eq_ignore_ascii_case(host)
-                    && existing.username == username
-                    && existing.password == password
-            })
+            .and_then(|bytes| parse_vault_record(&bytes))
+            .is_some_and(|rec| matches!(
+                rec,
+                VaultRecordPlaintext::Login(existing)
+                    if existing.host.eq_ignore_ascii_case(host)
+                        && existing.username == username
+                        && existing.password == password
+            ))
     })
 }
 
@@ -4768,6 +5434,14 @@ fn main() {
             vault_reveal_login,
             vault_copy_login_password,
             vault_delete_login,
+            vault_save_card,
+            vault_save_address,
+            vault_list_cards,
+            vault_list_addresses,
+            vault_reveal_card,
+            vault_reveal_address,
+            vault_delete_card,
+            vault_delete_address,
             list_extensions,
             set_extension_enabled,
             reload_extensions,
