@@ -163,6 +163,13 @@ function makeFaviconImg(faviconDataUrl, className) {
 const PRIVATE_BADGE_SVG =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z'/%3E%3Ccircle cx='12' cy='12' r='2.5'/%3E%3C/svg%3E";
 
+// Crescent-moon glyph for a suspended ("sleeping") tab - same role as
+// PRIVATE_BADGE_SVG above: the tab's own dimmed favicon/title (see
+// .tab.suspended in styles.css) is the main signal, this is the
+// "why does this tab look faded" explanation at a glance.
+const SUSPENDED_BADGE_SVG =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z'/%3E%3C/svg%3E";
+
 function renderTabs(tabs, active) {
   activeLabel = active;
   const activeTab = tabs.find((t) => t.label === active);
@@ -228,7 +235,10 @@ function renderTabs(tabs, active) {
   tabs.forEach((tab) => {
     const el = document.createElement("div");
     el.className =
-      "tab" + (tab.is_private ? " private" : "") + (tab.label === active ? " active" : "");
+      "tab" +
+      (tab.is_private ? " private" : "") +
+      (tab.suspended ? " suspended" : "") +
+      (tab.label === active ? " active" : "");
     el.dataset.label = tab.label;
 
     el.appendChild(makeFaviconImg(tab.favicon, "tab-favicon"));
@@ -239,6 +249,15 @@ function renderTabs(tabs, active) {
       badge.src = PRIVATE_BADGE_SVG;
       badge.alt = "Private";
       badge.title = "Private tab";
+      el.appendChild(badge);
+    }
+
+    if (tab.suspended) {
+      const badge = document.createElement("img");
+      badge.className = "tab-suspended-badge";
+      badge.src = SUSPENDED_BADGE_SVG;
+      badge.alt = "Sleeping";
+      badge.title = "Sleeping - click to wake";
       el.appendChild(badge);
     }
 
@@ -264,16 +283,100 @@ function renderTabs(tabs, active) {
 
     el.addEventListener("click", () => {
       if (tab.label !== activeLabel) {
+        // switch_tab itself transparently wakes a suspended tab (see
+        // resume_tab in main.rs) - nothing extra needed here for that.
         invoke("switch_tab", { label: tab.label }).catch((err) =>
           console.error("switch_tab failed:", err)
         );
       }
     });
 
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openTabContextMenu(e, tab);
+    });
+
     tabBar.insertBefore(el, newTabBtn);
   });
 
   updateTabPromptVisibility();
+}
+
+// Right-click menu on an individual tab - same small floating chrome-side
+// popup pattern as the + button's new-tab-menu (see closeNewTabMenu's own
+// comment for why this doesn't go through the native-menu plumbing
+// content tabs use), kept as its own separate element/close-handler pair
+// rather than generalizing the two into one shared popup system: they
+// close under slightly different conditions (this one's Suspend item
+// depends on which specific tab was clicked) and the codebase already
+// leans toward small focused duplicates over a shared abstraction for
+// UI this size.
+let tabContextMenuEl = null;
+
+function closeTabContextMenu() {
+  if (tabContextMenuEl) {
+    tabContextMenuEl.remove();
+    tabContextMenuEl = null;
+    document.removeEventListener("click", closeTabContextMenu, true);
+    document.removeEventListener("keydown", onTabContextMenuKeydown, true);
+  }
+}
+
+function onTabContextMenuKeydown(e) {
+  if (e.key === "Escape") closeTabContextMenu();
+}
+
+function openTabContextMenu(e, tab) {
+  closeNewTabMenu();
+  closeTabContextMenu();
+
+  const menu = document.createElement("div");
+  menu.className = "new-tab-menu";
+
+  // Suspending the tab you're currently looking at doesn't make sense
+  // (there'd be nothing left on screen), and an already-sleeping tab has
+  // nothing left to suspend - suspend_tab itself refuses/no-ops in both
+  // cases too (see that command's own guards), but leaving the item off
+  // the menu entirely here is clearer than showing something that would
+  // just error or silently do nothing.
+  if (tab.label !== activeLabel && !tab.suspended) {
+    const suspendItem = document.createElement("button");
+    suspendItem.className = "new-tab-menu-item";
+    suspendItem.textContent = "Suspend Tab";
+    suspendItem.title = "Free this tab's memory until you switch back to it";
+    suspendItem.addEventListener("click", () => {
+      closeTabContextMenu();
+      invoke("suspend_tab", { label: tab.label }).catch((err) =>
+        console.error("[kite] suspend_tab failed:", err)
+      );
+    });
+    menu.appendChild(suspendItem);
+  }
+
+  const closeItem = document.createElement("button");
+  closeItem.className = "new-tab-menu-item";
+  closeItem.textContent = "Close Tab";
+  closeItem.addEventListener("click", () => {
+    closeTabContextMenu();
+    invoke("close_tab", { label: tab.label }).catch((err) =>
+      console.error("[kite] close_tab failed:", err)
+    );
+  });
+  menu.appendChild(closeItem);
+
+  document.body.appendChild(menu);
+
+  const menuRect = menu.getBoundingClientRect();
+  const x = Math.min(e.clientX, window.innerWidth - menuRect.width - 8);
+  const y = Math.min(e.clientY, window.innerHeight - menuRect.height - 8);
+  menu.style.left = `${Math.max(8, x)}px`;
+  menu.style.top = `${Math.max(8, y)}px`;
+
+  tabContextMenuEl = menu;
+  setTimeout(() => {
+    document.addEventListener("click", closeTabContextMenu, true);
+    document.addEventListener("keydown", onTabContextMenuKeydown, true);
+  }, 0);
 }
 
 newTabBtn.addEventListener("click", () => {
@@ -363,6 +466,7 @@ newTabBtn.addEventListener("contextmenu", (e) => {
 // context_menu.js on every content-tab mousedown) closes that gap.
 listen("content-clicked", () => {
   closeNewTabMenu();
+  closeTabContextMenu();
 }).then(() => console.log("[kite] listening for content-clicked"))
   .catch((err) => console.error("[kite] failed to listen content-clicked:", err));
 
@@ -1856,7 +1960,8 @@ function renderTabSearchResults(allTabs, query) {
 
   tabSearchResults.forEach((tab, i) => {
     const li = document.createElement("li");
-    li.className = "tab-search-item" + (i === 0 ? " selected" : "");
+    li.className =
+      "tab-search-item" + (i === 0 ? " selected" : "") + (tab.suspended ? " suspended" : "");
 
     li.appendChild(makeFaviconImg(tab.favicon, "tab-search-item-favicon"));
 
@@ -1871,6 +1976,15 @@ function renderTabSearchResults(allTabs, query) {
     text.appendChild(title);
     text.appendChild(url);
     li.appendChild(text);
+
+    if (tab.suspended) {
+      const badge = document.createElement("img");
+      badge.className = "tab-search-item-suspended-badge";
+      badge.src = SUSPENDED_BADGE_SVG;
+      badge.alt = "Sleeping";
+      badge.title = "Sleeping - selecting it will wake it up";
+      li.appendChild(badge);
+    }
 
     const closeBtn = document.createElement("button");
     closeBtn.className = "tab-search-item-close";
