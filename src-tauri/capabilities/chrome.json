@@ -17,6 +17,7 @@
     "allow-reload",
     "allow-new-tab",
     "allow-switch-tab",
+    "allow-suspend-tab",
     "allow-close-tab",
     "allow-reopen-closed-tab",
     "allow-activate-tab-at",
