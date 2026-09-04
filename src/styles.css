@@ -120,6 +120,25 @@ html, body {
   background: var(--private-accent);
 }
 
+/* Suspended tab: dimmed rather than recolored like .tab.private above -
+   this isn't a different mode to announce, just "nothing's actually
+   running here right now" until you click it. Deliberately not combined
+   with .tab.private's styling rules even though a tab could technically
+   be both: a suspended private tab should still read as private first
+   (the more important signal) and merely look a little faded on top. */
+.tab.suspended .tab-favicon,
+.tab.suspended .tab-title {
+  opacity: 0.55;
+}
+
+.tab-suspended-badge {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  opacity: 0.55;
+  color: var(--muted);
+}
+
 /* Signature detail: a short amber tether on the active tab, echoing the
    kite-string accent on the home page - ties the chrome back to the
    brand mark instead of a generic underline. */
@@ -1251,6 +1270,20 @@ body.private-active .shield-badge.site-off {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Same dimmed-favicon treatment as .tab.suspended in the tab strip -
+   consistent signal wherever a suspended tab shows up. */
+.tab-search-item.suspended .tab-search-item-favicon {
+  opacity: 0.55;
+}
+
+.tab-search-item-suspended-badge {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  opacity: 0.55;
+  color: var(--muted);
 }
 
 .tab-search-item-close {
