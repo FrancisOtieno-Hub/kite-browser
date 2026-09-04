@@ -151,6 +151,16 @@ struct TabInfo {
     // matching is - watch_for_requests just reads this cached flag.
     #[serde(default)]
     site_allowlisted: bool,
+    // True while this tab's content webview has been deliberately
+    // destroyed to free memory (see suspend_tab) - everything else about
+    // the tab (title, url, favicon, position in the strip) is preserved
+    // exactly as it was, so it still looks and behaves like a normal tab
+    // everywhere except that clicking it (switch_tab) has to recreate its
+    // webview first (see resume_tab) before it can actually show
+    // anything. Never true for the active tab - see suspend_tab's own
+    // guard against suspending the one tab actually on screen.
+    #[serde(default)]
+    suspended: bool,
 }
 
 struct TabState {
@@ -2996,6 +3006,7 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
             is_private: private,
             blocked_count: 0,
             site_allowlisted: false,
+            suspended: false,
         });
     }
 
@@ -3154,6 +3165,93 @@ fn show_crashed_page(app: &tauri::AppHandle, old_label: &str) {
     push_crashed_url_to_page(app, &new_label);
     emit_tabs_changed(app);
     emit_active_url(app);
+}
+
+// Wakes a suspended tab back up - mirrors show_crashed_page's own "create
+// a fresh webview under a brand new label, then splice it into the old
+// tab's spot in the list" approach, and for the same reason: create_tab_webview
+// always mints a new label via next_id internally, and duplicating its
+// ~250-line WebviewBuilder setup (navigation/title/download handlers,
+// extension script injection, crash/request watchers) just to be able to
+// reuse the old label isn't worth maintaining two copies of all that in
+// sync. The tab's visible identity - title, position in the strip, being
+// "the same tab" as far as the person's concerned - survives the label
+// swap underneath; nothing downstream holds onto a label across time
+// (every consumer re-derives it fresh from the next get_tabs/tabs-changed
+// snapshot), so the swap is invisible outside this function - EXCEPT to
+// this function's own caller, which is why this returns the label to
+// actually use from here on rather than assuming the caller's original
+// label is still valid. switch_tab learned this the hard way: calling
+// activate_tab with the pre-resume label after a real swap targeted a
+// label nothing was listening on anymore (the actual webview now lived
+// under new_label), so the tab silently stayed blank until a second
+// click happened to hit it under its now-current label.
+//
+// If the tab was showing the crash-recovery page at the moment it got
+// suspended, this incidentally "heals" it too: TabInfo.url always holds
+// the real site address even while crashed (see that field's own
+// comment), so create_tab_webview below loads that real address fresh
+// rather than resuming into another dead page.
+fn resume_tab(app: &tauri::AppHandle, old_label: &str) -> Result<String, String> {
+    let (real_url, real_title, real_is_private) = {
+        let state = app.state::<SharedTabState>();
+        let st = state.lock_recover();
+        let Some(tab) = st.tabs.iter().find(|t| t.label == old_label) else {
+            // Tab was already closed - hand the label straight back
+            // unchanged; the caller's own activate_tab/get_webview calls
+            // against a nonexistent label already no-op harmlessly
+            // elsewhere in this file, same as they would have before
+            // suspension existed at all.
+            return Ok(old_label.to_string());
+        };
+        if !tab.suspended {
+            // Already awake - nothing to do, and critically: no label
+            // change either, so the caller can keep using it as-is.
+            return Ok(old_label.to_string());
+        }
+        (tab.url.clone(), tab.title.clone(), tab.is_private)
+    };
+
+    let new_label = create_tab_webview(app, &real_url, real_is_private)?;
+
+    {
+        let state = app.state::<SharedTabState>();
+        let mut st = state.lock_recover();
+        let old_idx = st.tabs.iter().position(|t| t.label == old_label);
+        // create_tab_webview always appends the new tab at the end of the
+        // list, so new_idx is always > old_idx here - removing it first
+        // doesn't shift old_idx before we insert at it (same guarantee
+        // show_crashed_page's identical splice relies on).
+        let new_idx = st.tabs.iter().position(|t| t.label == new_label);
+        if let (Some(old_i), Some(new_i)) = (old_idx, new_idx) {
+            let mut new_tab_info = st.tabs.remove(new_i);
+            // Title only - favicon/blocked_count/site_allowlisted are
+            // deliberately left at create_tab_webview's fresh defaults
+            // rather than carried over from the old entry, since this is
+            // a genuinely fresh page load (on_navigation will recompute
+            // all three for real the moment it actually finishes loading,
+            // same as any ordinary navigation would).
+            new_tab_info.title = real_title;
+            st.tabs.insert(old_i, new_tab_info);
+            st.tabs.remove(old_i + 1);
+        }
+    }
+
+    // Normally a no-op: suspend_tab already destroyed this webview, so
+    // there's nothing left at old_label to close. Kept as a defensive
+    // mirror of show_crashed_page's own cleanup in case resume_tab is
+    // ever reached for a tab whose webview somehow still exists.
+    if let Some(old_webview) = app.get_webview(old_label) {
+        let _ = old_webview.close();
+    }
+
+    // Deliberately doesn't call activate_tab itself (an earlier version
+    // of this function did, gated on an "was this already the active
+    // tab" check that turned out to always be false on the real call
+    // path - switch_tab only ever calls resume_tab for a tab it's about
+    // to switch *to*, which by definition isn't the currently-active one
+    // yet). Activation is the caller's job, using the label returned here.
+    Ok(new_label)
 }
 
 // WebView2's own render-process-crash signal isn't exposed through
@@ -4322,9 +4420,88 @@ async fn go_home(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), S
 #[tauri::command]
 async fn switch_tab(webview: tauri::Webview, app: tauri::AppHandle, label: String) -> Result<(), String> {
     require_chrome(&webview)?;
+    // A suspended tab wakes up transparently on an ordinary click/switch -
+    // there's no separate "wake up" step the person has to think about.
+    // resume_tab itself no-ops (returning the same label unchanged) if
+    // the tab isn't actually suspended, so this is safe to call
+    // unconditionally rather than checking first. Critically, activate_tab
+    // below targets whatever label resume_tab actually returns, not the
+    // one the frontend originally asked for - a real wake-up recreates
+    // the webview under a brand new label (see resume_tab's own comment),
+    // so activating the original label would target a webview that no
+    // longer exists under that name.
+    let label = resume_tab(&app, &label)?;
     activate_tab(&app, &label)?;
     emit_tabs_changed(&app);
     emit_active_url(&app);
+    Ok(())
+}
+
+// Backs the tab strip's right-click "Suspend tab" item - destroys the
+// tab's content webview (the actual memory win: its whole native render
+// process goes away, not just something in Kite's own memory) while
+// keeping its TabInfo entry - title, url, favicon, position - exactly as
+// it was, so it still looks like an ordinary tab everywhere (tab strip,
+// tab search, get_tabs) except that switch_tab has to resume_tab it
+// first the moment it's clicked back to life.
+#[tauri::command]
+fn suspend_tab(webview: tauri::Webview, app: tauri::AppHandle, label: String) -> Result<(), String> {
+    require_chrome(&webview)?;
+
+    let (is_active, already_suspended, is_library_tab, tab_exists) = {
+        let state = app.state::<SharedTabState>();
+        let st = state.lock_recover();
+        (
+            st.active == label,
+            st.tabs.iter().find(|t| t.label == label).map(|t| t.suspended).unwrap_or(true),
+            st.library_tab.as_deref() == Some(label.as_str()),
+            st.tabs.iter().any(|t| t.label == label),
+        )
+    };
+
+    if !tab_exists || already_suspended {
+        // Nothing to do - either it's already asleep or it's gone. Not an
+        // error: the tab strip re-renders from a fresh get_tabs snapshot
+        // on every tabs-changed push, so a menu click racing a tab close
+        // elsewhere is a normal, harmless thing to happen here.
+        return Ok(());
+    }
+    if is_active {
+        return Err("Can't suspend the tab you're currently viewing.".to_string());
+    }
+    if is_library_tab {
+        // The Library Panel keeps this specific tab's content webview
+        // parked (hidden, not destroyed) so it can reappear the instant
+        // you switch back to it - see library_tab's own comment on
+        // TabState. Suspending would destroy the very webview the panel
+        // expects to still be there, so this is refused outright rather
+        // than silently breaking that guarantee.
+        return Err("Can't suspend a tab while the Library panel is open on it.".to_string());
+    }
+
+    // Same cleanup close_tab does, and for the same reason: a pending
+    // login capture only makes sense while the page it came from is still
+    // actually loaded (see report_login_submit) - destroying this tab's
+    // webview leaves nothing for a later "Save password?" prompt to be
+    // about, so there's no reason to keep it in memory once suspended.
+    {
+        let pending_state = app.state::<SharedPendingLogins>();
+        pending_state.lock_recover().0.remove(&label);
+    }
+
+    if let Some(content_webview) = app.get_webview(&label) {
+        let _ = content_webview.close();
+    }
+
+    {
+        let state = app.state::<SharedTabState>();
+        let mut st = state.lock_recover();
+        if let Some(tab) = st.tabs.iter_mut().find(|t| t.label == label) {
+            tab.suspended = true;
+        }
+    }
+
+    emit_tabs_changed(&app);
     Ok(())
 }
 
@@ -5384,6 +5561,7 @@ fn main() {
             new_tab,
             open_link_in_new_tab,
             switch_tab,
+            suspend_tab,
             close_tab,
             reopen_closed_tab,
             activate_tab_at,
