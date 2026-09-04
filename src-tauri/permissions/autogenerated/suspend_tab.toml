@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-suspend-tab"
+description = "Enables the suspend_tab command without any pre-configured scope."
+commands.allow = ["suspend_tab"]
+
+[[permission]]
+identifier = "deny-suspend-tab"
+description = "Denies the suspend_tab command without any pre-configured scope."
+commands.deny = ["suspend_tab"]
