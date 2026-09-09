@@ -110,6 +110,14 @@ const settingsContentBlocking = document.getElementById("settings-content-blocki
 const settingsClearDataBtn = document.getElementById("settings-clear-data-btn");
 const settingsBlocklistStatus = document.getElementById("settings-blocklist-status");
 const settingsRefreshBlocklistBtn = document.getElementById("settings-refresh-blocklist-btn");
+const settingsSyncFolderPath = document.getElementById("settings-sync-folder-path");
+const settingsChooseSyncFolderBtn = document.getElementById("settings-choose-sync-folder-btn");
+const settingsSyncPushBtn = document.getElementById("settings-sync-push-btn");
+const settingsSyncStatus = document.getElementById("settings-sync-status");
+const settingsSitePermissionHostInput = document.getElementById("settings-site-permission-host-input");
+const settingsAddSitePermissionBtn = document.getElementById("settings-add-site-permission-btn");
+const settingsSitePermissionsEmpty = document.getElementById("settings-site-permissions-empty");
+const settingsSitePermissionsList = document.getElementById("settings-site-permissions-list");
 const historyList = document.getElementById("history-list");
 const bookmarksList = document.getElementById("bookmarks-list");
 const downloadsList = document.getElementById("downloads-list");
@@ -1031,9 +1039,182 @@ function loadSettings() {
       settingsBlocklistStatus.textContent = formatBlocklistStatus(status);
     })
     .catch((err) => console.error("[kite] get_blocklist_status failed:", err));
+
+  refreshSyncStatus();
+  loadSitePermissions();
 }
 
-// last_refresh/entry_count come from get_blocklist_status on load, or
+// Own-cloud sync ("Sync now" pulls, merges, then pushes in one action -
+// see main.rs's sync_now for why this isn't split into separate Pull/
+// Push buttons). Re-fetched on every Settings open, same as the
+// blocklist status above, since last_pushed_at/remote_saved_at can
+// change from a sync made just now or one made on another machine.
+function formatSyncStatus(status) {
+  if (!status.folder) {
+    return "No sync folder chosen yet.";
+  }
+  if (!status.last_pushed_at) {
+    return "Folder chosen \u2014 not synced yet.";
+  }
+  return `Last synced from this device ${formatVisitedAt(status.last_pushed_at)}.`;
+}
+
+function refreshSyncStatus() {
+  invoke("sync_status")
+    .then((status) => {
+      settingsSyncFolderPath.value = status.folder || "";
+      settingsSyncStatus.textContent = formatSyncStatus(status);
+      settingsSyncPushBtn.disabled = !status.folder;
+    })
+    .catch((err) => console.error("[kite] sync_status failed:", err));
+}
+
+settingsChooseSyncFolderBtn.addEventListener("click", () => {
+  invoke("sync_choose_folder")
+    .then((path) => {
+      // null means the user cancelled the picker - leave things as is.
+      if (path) {
+        settingsSyncFolderPath.value = path;
+        settingsSyncPushBtn.disabled = false;
+        settingsSyncStatus.textContent = "Folder chosen \u2014 not synced yet.";
+      }
+    })
+    .catch((err) => console.error("[kite] sync_choose_folder failed:", err));
+});
+
+settingsSyncPushBtn.addEventListener("click", () => {
+  settingsSyncPushBtn.disabled = true;
+  settingsSyncStatus.textContent = "Syncing\u2026";
+  invoke("sync_now")
+    .then(() => refreshSyncStatus())
+    .catch((err) => {
+      console.error("[kite] sync_now failed:", err);
+      // Most likely cause is a locked vault (see sync_now's own error
+      // message on the Rust side) - surface it directly rather than a
+      // generic failure, since the fix is just "unlock it in Passwords".
+      settingsSyncStatus.textContent = typeof err === "string" ? err : "Sync failed.";
+      settingsSyncPushBtn.disabled = false;
+    });
+});
+
+// --- Site permissions (Settings) ---
+// Backs the list added next to Content blocking - see main.rs's
+// SitePermissions/watch_for_permission_requests for what these decisions
+// actually do (answer WebView2's camera/mic/location/notification prompts
+// silently instead of showing its native bar). Four independent per-kind
+// selects per row rather than one blanket allow/deny, matching the
+// backend's own per-kind model.
+const SITE_PERMISSION_KINDS = [
+  { kind: "camera", label: "Camera" },
+  { kind: "microphone", label: "Microphone" },
+  { kind: "geolocation", label: "Location" },
+  { kind: "notifications", label: "Notifications" },
+];
+
+// entry[kind] is "allow" | "deny" | null (from get_site_permissions) -
+// null means "ask every time", the same as a host with no entry at all.
+function buildSitePermissionRow(entry) {
+  const li = document.createElement("li");
+  li.className = "library-item site-permission-item";
+
+  const text = document.createElement("div");
+  text.className = "library-item-text";
+  const title = document.createElement("div");
+  title.className = "library-item-title";
+  title.textContent = entry.host;
+  text.appendChild(title);
+  li.appendChild(text);
+
+  const controls = document.createElement("div");
+  controls.className = "site-permission-controls";
+
+  SITE_PERMISSION_KINDS.forEach(({ kind, label }) => {
+    const wrapper = document.createElement("label");
+    const select = document.createElement("select");
+    select.className = "settings-select";
+    [
+      ["", "Ask every time"],
+      ["allow", "Allow"],
+      ["deny", "Deny"],
+    ].forEach(([value, optionLabel]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = optionLabel;
+      select.appendChild(option);
+    });
+    select.value = entry[kind] || "";
+    select.addEventListener("change", () => {
+      invoke("set_site_permission", {
+        host: entry.host,
+        kind,
+        state: select.value || null,
+      })
+        .then(loadSitePermissions)
+        .catch((err) => {
+          console.error("[kite] set_site_permission failed:", err);
+          loadSitePermissions(); // revert the select to whatever's actually saved
+        });
+    });
+    wrapper.appendChild(document.createTextNode(`${label} `));
+    wrapper.appendChild(select);
+    controls.appendChild(wrapper);
+  });
+  li.appendChild(controls);
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "library-item-remove";
+  removeBtn.textContent = "\u00D7";
+  removeBtn.title = "Forget this site (back to Ask every time for all four)";
+  removeBtn.addEventListener("click", () => {
+    invoke("remove_site_permissions", { host: entry.host })
+      .then(loadSitePermissions)
+      .catch((err) => console.error("[kite] remove_site_permissions failed:", err));
+  });
+  li.appendChild(removeBtn);
+
+  return li;
+}
+
+function loadSitePermissions() {
+  invoke("get_site_permissions")
+    .then((entries) => {
+      settingsSitePermissionsEmpty.classList.toggle("visible", entries.length === 0);
+      settingsSitePermissionsList.innerHTML = "";
+      entries.forEach((entry) => {
+        settingsSitePermissionsList.appendChild(buildSitePermissionRow(entry));
+      });
+    })
+    .catch((err) => console.error("[kite] get_site_permissions failed:", err));
+}
+
+// "Add site" only takes a host - there's no bare "add with nothing set"
+// on the backend (set_site_permission with state=null on an otherwise-
+// empty entry is a no-op there, see its own comment), so this adds a
+// blank row to the list *client-side* rather than persisting anything
+// yet. It becomes real the moment any of its four selects is changed
+// away from "Ask every time" - the same set_site_permission call every
+// other row's selects already use, which loadSitePermissions then
+// refreshes fresh from the backend, replacing this provisional row with
+// a persisted one.
+settingsAddSitePermissionBtn.addEventListener("click", () => {
+  const host = settingsSitePermissionHostInput.value.trim().toLowerCase();
+  if (!host) {
+    return;
+  }
+  const alreadyListed = Array.from(settingsSitePermissionsList.children).some(
+    (li) => li.querySelector(".library-item-title")?.textContent === host,
+  );
+  if (!alreadyListed) {
+    settingsSitePermissionsEmpty.classList.remove("visible");
+    settingsSitePermissionsList.appendChild(
+      buildSitePermissionRow({ host, camera: null, microphone: null, geolocation: null, notifications: null }),
+    );
+  }
+  settingsSitePermissionHostInput.value = "";
+});
+
+
 // the "blocklist-refreshed" event payload after a manual check - same
 // shape either way (see BlocklistStatus/BlocklistRefreshResult on the
 // Rust side).
