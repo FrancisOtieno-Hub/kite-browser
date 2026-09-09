@@ -926,6 +926,33 @@ body.private-active .shield-badge.site-off {
   flex-shrink: 0;
 }
 
+/* --- Site permissions (Settings) ---
+   Reuses .library-item/-text/-title/-remove wholesale (same list-row
+   shape as vault addresses etc.) - only the per-kind select group below
+   is new, since nothing else in Settings needed four inline controls on
+   one row before. */
+.site-permission-item {
+  cursor: default; /* .library-item defaults to pointer (clickable rows
+                       elsewhere); this row's only interactive parts are
+                       its own selects/button, not the row itself. */
+  flex-wrap: wrap;
+}
+
+.site-permission-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.site-permission-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .library-item-action:hover {
   background: var(--btn-hover);
 }
