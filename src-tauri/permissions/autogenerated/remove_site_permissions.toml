@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT
+"$schema" = "../../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-remove-site-permissions"
+description = "Enables the remove_site_permissions command without any pre-configured scope."
+commands.allow = ["remove_site_permissions"]
+
+[[permission]]
+identifier = "deny-remove-site-permissions"
+description = "Denies the remove_site_permissions command without any pre-configured scope."
+commands.deny = ["remove_site_permissions"]
