@@ -311,6 +311,19 @@
           </section>
 
           <section class="settings-section">
+            <h3 class="settings-section-title">Own-cloud sync</h3>
+            <p class="settings-section-desc">Encrypts bookmarks, history &amp; settings with your vault's password and writes them into a folder your own cloud (Dropbox, Drive, OneDrive, Nextcloud) already keeps in sync. Requires the vault to be unlocked.</p>
+            <div class="settings-path-row">
+              <input type="text" id="settings-sync-folder-path" class="settings-text-input" readonly placeholder="No folder chosen" />
+              <button id="settings-choose-sync-folder-btn" class="library-item-action">Change&hellip;</button>
+            </div>
+            <div class="settings-path-row settings-blocklist-row">
+              <span id="settings-sync-status" class="settings-status-text">No sync folder chosen yet.</span>
+              <button id="settings-sync-push-btn" class="library-item-action" disabled>Sync now</button>
+            </div>
+          </section>
+
+          <section class="settings-section">
             <h3 class="settings-section-title">Content blocking</h3>
             <p class="settings-section-desc">Blocks known ad and tracker requests before they load.</p>
             <label class="settings-radio">
@@ -321,6 +334,17 @@
               <span id="settings-blocklist-status" class="settings-status-text">Checking blocklist status&hellip;</span>
               <button id="settings-refresh-blocklist-btn" class="library-item-action">Check for updates</button>
             </div>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">Site permissions</h3>
+            <p class="settings-section-desc">Remembered camera, microphone, location &amp; notification decisions for specific sites. "Ask every time" lets that site prompt normally, same as a site you've never visited.</p>
+            <div class="settings-path-row">
+              <input type="text" id="settings-site-permission-host-input" class="settings-text-input" placeholder="example.com" />
+              <button id="settings-add-site-permission-btn" class="library-item-action">Add site&hellip;</button>
+            </div>
+            <p class="library-empty" id="settings-site-permissions-empty">No sites remembered yet.</p>
+            <ul class="library-list" id="settings-site-permissions-list"></ul>
           </section>
 
           <section class="settings-section">
