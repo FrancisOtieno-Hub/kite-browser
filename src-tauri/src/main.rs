@@ -446,6 +446,96 @@ struct BookmarkView {
     favicon: Option<String>,
 }
 
+// --- Per-site permission memory ---
+//
+// WebView2's own native permission prompt (the bar it shows for camera/
+// mic/location/notification requests) already persists a decision per
+// origin - but into its own Chromium profile storage, invisible to Kite
+// and unreachable from any Settings UI, and not something our own
+// sync_now can read or carry across devices. This is a second, explicit
+// record Kite keeps itself and is authoritative over: watch_for_
+// permission_requests (below) checks it first and answers WebView2's
+// request immediately (skipping WebView2's own native prompt) whenever a
+// decision has been recorded here; otherwise it leaves things alone and
+// WebView2's native prompt still shows, same as if this feature didn't
+// exist at all.
+//
+// Deliberately per-kind rather than one blanket allow/deny per site
+// (matches how every mainstream browser's site-settings page works) -
+// granting camera on a video-call site shouldn't silently also grant its
+// notifications.
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SitePermissionState {
+    Allow,
+    Deny,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct SitePermissions {
+    #[serde(default)]
+    camera: Option<SitePermissionState>,
+    #[serde(default)]
+    microphone: Option<SitePermissionState>,
+    #[serde(default)]
+    geolocation: Option<SitePermissionState>,
+    #[serde(default)]
+    notifications: Option<SitePermissionState>,
+}
+
+impl SitePermissions {
+    // Used to drop a host's entry entirely once every field on it has
+    // been cleared back to None (via set_site_permission), rather than
+    // letting PersistedData.site_permissions accumulate empty entries
+    // for sites someone has decided *not* to have an opinion about.
+    fn is_empty(&self) -> bool {
+        self.camera.is_none()
+            && self.microphone.is_none()
+            && self.geolocation.is_none()
+            && self.notifications.is_none()
+    }
+}
+
+// What get_site_permissions returns to the Settings UI - the map form
+// (PersistedData.site_permissions) is convenient for lookups keyed by
+// host, but IPC/JSON wants a flat list to render as rows.
+#[derive(Clone, Serialize)]
+struct SitePermissionEntry {
+    host: String,
+    camera: Option<SitePermissionState>,
+    microphone: Option<SitePermissionState>,
+    geolocation: Option<SitePermissionState>,
+    notifications: Option<SitePermissionState>,
+}
+
+// Extracts just the host, whatever shape the input comes in as - a bare
+// host like "example.com" (from watch_for_permission_requests' own real
+// lookups, which always pass a bare host), or a full URL like
+// "https://example.com/some/path" (from the Settings "Add site" field,
+// which nothing stops a person from pasting a full address into - and
+// pasting a full URL when asked for "a site" is a completely reasonable
+// thing to do, this just needs to handle it). Both must normalize to the
+// same key or a decision saved through one path silently can't be found
+// by the other - confirmed the hard way when entries ended up keyed by
+// full URLs and every lookup by bare host missed them entirely.
+//
+// Tries parsing the trimmed input as a URL outright first (handles the
+// full-URL case). If that fails - a bare host has no scheme, so
+// Url::parse alone rejects it - retries with an "https://" prefix, which
+// gives Url::parse enough shape to extract just the host. Falls back to
+// the trimmed-and-lowercased input verbatim only if neither attempt
+// yields a host at all, which shouldn't happen for any realistic input
+// but keeps this from ever panicking or returning empty on something
+// stranger than expected.
+fn normalize_host(input: &str) -> String {
+    let trimmed = input.trim();
+    url::Url::parse(trimmed)
+        .ok()
+        .or_else(|| url::Url::parse(&format!("https://{trimmed}")).ok())
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+        .unwrap_or_else(|| trimmed.to_lowercase())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct DownloadEntry {
     url: String,
@@ -489,6 +579,16 @@ struct Settings {
     downloads_dir: Option<String>,
     #[serde(default = "default_content_blocking_enabled")]
     content_blocking_enabled: bool,
+    // Own-cloud sync (see the "Own-cloud sync" module below) - a local
+    // folder path the person has pointed at their own Dropbox/Drive/
+    // OneDrive/Nextcloud sync client. None until sync_choose_folder is
+    // called at least once.
+    #[serde(default)]
+    sync_folder: Option<String>,
+    // Unix ms of the last successful sync_now from *this* machine -
+    // display-only (Settings UI), doesn't drive any logic itself.
+    #[serde(default)]
+    sync_last_pushed_at: Option<i64>,
 }
 
 fn default_search_engine() -> String {
@@ -511,6 +611,8 @@ impl Default for Settings {
             homepage_url: String::new(),
             downloads_dir: None,
             content_blocking_enabled: default_content_blocking_enabled(),
+            sync_folder: None,
+            sync_last_pushed_at: None,
         }
     }
 }
@@ -572,6 +674,12 @@ struct PersistedData {
     // file only holds the exception/override state).
     #[serde(default)]
     extensions: ExtensionSettings,
+    // Per-site camera/microphone/geolocation/notifications decisions -
+    // see the "Per-site permission memory" module above for why this
+    // exists alongside WebView2's own native prompt/storage. Keyed by
+    // normalize_host's output.
+    #[serde(default)]
+    site_permissions: std::collections::HashMap<String, SitePermissions>,
 }
 
 
@@ -2215,6 +2323,125 @@ fn toggle_site_allowlist(webview: tauri::Webview, app: tauri::AppHandle) -> Resu
     Ok(now_allowlisted)
 }
 
+// --- Per-site permission memory: commands ---
+// (Data model + normalize_host + the WebView2 interception itself -
+// watch_for_permission_requests - live earlier/later in this file; see
+// the "Per-site permission memory" module comment above SitePermissions
+// for the overall design.)
+
+// Backs a future Settings "Site permissions" list - flattens the map
+// into rows and sorts by host so the UI doesn't have to.
+#[tauri::command]
+fn get_site_permissions(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Vec<SitePermissionEntry>, String> {
+    require_chrome(&webview)?;
+    let state = app.state::<SharedAppData>();
+    let st = state.lock_recover();
+    let mut entries: Vec<SitePermissionEntry> = st
+        .data
+        .site_permissions
+        .iter()
+        .map(|(host, p)| SitePermissionEntry {
+            host: host.clone(),
+            camera: p.camera,
+            microphone: p.microphone,
+            geolocation: p.geolocation,
+            notifications: p.notifications,
+        })
+        .collect();
+    entries.sort_by(|a, b| a.host.cmp(&b.host));
+    Ok(entries)
+}
+
+// Sets (or, with state=null, clears) one permission kind for one host.
+// `kind` is one of "camera"/"microphone"/"geolocation"/"notifications";
+// `state` is "allow", "deny", or null to go back to "ask every time"
+// (i.e. defer to WebView2's own native prompt again, same as a host
+// that's never been decided on).
+#[tauri::command]
+fn set_site_permission(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    host: String,
+    kind: String,
+    state: Option<String>,
+) -> Result<(), String> {
+    require_chrome(&webview)?;
+
+    let parsed_state = match state.as_deref() {
+        None => None,
+        Some("allow") => Some(SitePermissionState::Allow),
+        Some("deny") => Some(SitePermissionState::Deny),
+        Some(other) => return Err(format!("unknown permission state: {other}")),
+    };
+
+    let host = normalize_host(&host);
+    if host.is_empty() {
+        return Err("host can't be empty".to_string());
+    }
+
+    {
+        let app_state = app.state::<SharedAppData>();
+        let mut st = app_state.lock_recover();
+        let entry = st.data.site_permissions.entry(host.clone()).or_default();
+        match kind.as_str() {
+            "camera" => entry.camera = parsed_state,
+            "microphone" => entry.microphone = parsed_state,
+            "geolocation" => entry.geolocation = parsed_state,
+            "notifications" => entry.notifications = parsed_state,
+            other => return Err(format!("unknown permission kind: {other}")),
+        }
+        if entry.is_empty() {
+            st.data.site_permissions.remove(&host);
+        }
+    }
+    save_persisted_data(&app);
+    // Explicitly resets/sets WebView2's own persisted per-origin store to
+    // match, in addition to SetSavesInProfile(false) in watch_for_
+    // permission_requests preventing new staleness - see
+    // sync_webview2_permission_state's own doc comment for why both are
+    // needed together (one stops future caching, the other clears
+    // whatever's already cached).
+    #[cfg(windows)]
+    sync_webview2_permission_state(&app, &host, &kind, parsed_state);
+    Ok(())
+}
+
+// Clears every recorded permission for a host in one go - the "Reset"
+// action next to a row in the Settings list, rather than making someone
+// clear all four kinds one at a time.
+#[tauri::command]
+fn remove_site_permissions(webview: tauri::Webview, app: tauri::AppHandle, host: String) -> Result<(), String> {
+    require_chrome(&webview)?;
+    // Deliberately NOT normalized here, unlike set_site_permission below -
+    // this command is always called with an existing row's own host value,
+    // straight from get_site_permissions, so it needs to remove that
+    // *exact* map key, whatever it happens to be. Normalizing here would
+    // silently no-op removal of any entry whose key predates the
+    // normalize_host fix (e.g. a leftover full-URL key like
+    // "https://example.com/path" normalizes to "example.com", which
+    // doesn't match that actual stored key at all) - confirmed the hard
+    // way: "Forget this site" did nothing on exactly those pre-existing
+    // bad-key rows once normalize_host started actually parsing URLs.
+    {
+        let app_state = app.state::<SharedAppData>();
+        let mut st = app_state.lock_recover();
+        st.data.site_permissions.remove(&host);
+    }
+    save_persisted_data(&app);
+    // Unlike the map removal above, WebView2's own reset genuinely does
+    // need a real bare host to build a correct origin string - so this
+    // normalizes host (whether it started out bare or as a leftover full
+    // URL) just for this part.
+    #[cfg(windows)]
+    {
+        let normalized_host = normalize_host(&host);
+        for kind in ["camera", "microphone", "geolocation", "notifications"] {
+            sync_webview2_permission_state(&app, &normalized_host, kind, None);
+        }
+    }
+    Ok(())
+}
+
 // Hand-picked additions merged into every refresh, on top of whatever
 // comes back from StevenBlack/hosts - see blocklist.txt's own header for
 // why these specific ones are called out (common trackers not reliably
@@ -2438,6 +2665,323 @@ fn choose_downloads_dir(webview: tauri::Webview, app: tauri::AppHandle) -> Resul
     }
     save_persisted_data(&app);
     Ok(Some(path_str))
+}
+
+// --- Own-cloud sync ---
+//
+// Deliberately not a bespoke network client (no WebDAV/Dropbox/Drive API
+// calls, no OAuth) - the person points Kite at a folder that their own
+// cloud provider's desktop app already keeps in sync (a Dropbox, Google
+// Drive, OneDrive, or Nextcloud folder), and Kite just reads/writes one
+// file in it. The actual network transfer stays the cloud client's job,
+// not ours - keeps this feature at "one JSON file on disk" instead of an
+// HTTP client, OAuth flow, and per-provider API integration, in line with
+// Kite's no-server-cost/no-heavy-dependency positioning.
+//
+// Reuses the vault's own crypto (Argon2id-derived key + AES-GCM, see the
+// Password vault module above) rather than a second key/derivation of
+// its own - sync is only available while the vault is unlocked. Simpler
+// than standing up a separate key-management story just for bookmarks/
+// history, which are lower-stakes than saved passwords but still not
+// something to drop onto a cloud folder in plaintext.
+//
+// Stage 1: choose a folder, and push (encrypt current bookmarks/history/
+// settings and write them into that folder). Stage 2 (this commit): pull
+// + merge, exposed as a single sync_now command - see its own comment
+// for why pull/merge/push are one action rather than separate buttons.
+
+const SYNC_FILE_NAME: &str = "kite_sync.json";
+
+// What actually gets encrypted - a full snapshot, not a diff. Simpler,
+// and small enough (bookmarks/history for one person, not a team) that
+// there's no real cost to re-sending the whole thing on every push.
+#[derive(Serialize, Deserialize)]
+struct SyncPayloadPlaintext {
+    bookmarks: Vec<Bookmark>,
+    history: Vec<HistoryEntry>,
+    settings: Settings,
+    // Added alongside per-site permission memory - see merge_site_
+    // permissions for why this merges per-field rather than newer-wins
+    // like Settings does.
+    #[serde(default)]
+    site_permissions: std::collections::HashMap<String, SitePermissions>,
+}
+
+// The shape written into kite_sync.json inside the chosen folder.
+// saved_at is deliberately left unencrypted alongside the ciphertext -
+// Stage 2's pull needs to compare "when was this pushed" against the
+// local last-pushed time without requiring the vault to be unlocked just
+// to decide whether there's anything worth pulling.
+#[derive(Serialize, Deserialize)]
+struct SyncFile {
+    nonce: String,
+    ciphertext: String,
+    saved_at: i64, // unix ms
+}
+
+#[derive(Clone, Serialize)]
+struct SyncStatusPayload {
+    folder: Option<String>,
+    last_pushed_at: Option<i64>,
+    // Whether kite_sync.json currently exists in `folder`, and its
+    // saved_at if so - read straight off the (still-encrypted) SyncFile,
+    // not decrypted, so this works even while the vault is locked.
+    // Both false/None if no folder is configured yet, or the folder
+    // hasn't been pushed to by any machine yet.
+    remote_exists: bool,
+    remote_saved_at: Option<i64>,
+}
+
+fn sync_file_path(folder: &str) -> PathBuf {
+    PathBuf::from(folder).join(SYNC_FILE_NAME)
+}
+
+#[tauri::command]
+fn sync_choose_folder(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Option<String>, String> {
+    require_chrome(&webview)?;
+    use tauri_plugin_dialog::DialogExt;
+
+    let starting_dir = {
+        let state = app.state::<SharedAppData>();
+        let st = state.lock_recover();
+        st.data.settings.sync_folder.clone()
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let mut builder = app.dialog().file();
+    if let Some(dir) = &starting_dir {
+        builder = builder.set_directory(dir);
+    }
+    builder.pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+
+    let picked = rx.recv().map_err(|e| e.to_string())?;
+    let Some(file_path) = picked else {
+        return Ok(None); // user cancelled
+    };
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    if !path.is_dir() {
+        return Err("selected item isn't a folder".to_string());
+    }
+    let path_str = path.to_string_lossy().to_string();
+
+    {
+        let state = app.state::<SharedAppData>();
+        let mut st = state.lock_recover();
+        st.data.settings.sync_folder = Some(path_str.clone());
+    }
+    save_persisted_data(&app);
+    Ok(Some(path_str))
+}
+
+#[tauri::command]
+fn sync_status(webview: tauri::Webview, app: tauri::AppHandle) -> Result<SyncStatusPayload, String> {
+    require_chrome(&webview)?;
+    let (folder, last_pushed_at) = {
+        let state = app.state::<SharedAppData>();
+        let st = state.lock_recover();
+        (st.data.settings.sync_folder.clone(), st.data.settings.sync_last_pushed_at)
+    };
+
+    let Some(folder) = folder else {
+        return Ok(SyncStatusPayload {
+            folder: None,
+            last_pushed_at: None,
+            remote_exists: false,
+            remote_saved_at: None,
+        });
+    };
+
+    let remote = fs::read_to_string(sync_file_path(&folder))
+        .ok()
+        .and_then(|s| serde_json::from_str::<SyncFile>(&s).ok());
+
+    Ok(SyncStatusPayload {
+        folder: Some(folder),
+        last_pushed_at,
+        remote_exists: remote.is_some(),
+        remote_saved_at: remote.map(|f| f.saved_at),
+    })
+}
+
+// Merges remote bookmarks into local ones - a straight union by URL.
+// Deliberately additive only: a bookmark missing from the remote copy
+// (e.g. this is the first pull ever from a folder another machine has
+// been using for a while) is never removed locally just because sync
+// doesn't know about it yet - removing a bookmark is something a person
+// does on purpose, not a side effect of merging.
+fn merge_bookmarks(local: Vec<Bookmark>, remote: Vec<Bookmark>) -> Vec<Bookmark> {
+    let mut merged = local;
+    for bookmark in remote {
+        if !merged.iter().any(|b| b.url == bookmark.url) {
+            merged.push(bookmark);
+        }
+    }
+    merged
+}
+
+// Same union reasoning as merge_bookmarks, but deduped on the (url,
+// visited_at) pair rather than url alone - the same page visited at two
+// different times is two legitimate history entries, not a duplicate.
+// Re-sorted by visited_at afterward (merged local+remote order isn't
+// chronological) and trimmed to HISTORY_LIMIT the same way record_history
+// already does, so a merge can never grow history past its normal cap.
+fn merge_history(local: Vec<HistoryEntry>, remote: Vec<HistoryEntry>) -> Vec<HistoryEntry> {
+    let mut merged = local;
+    for entry in remote {
+        if !merged
+            .iter()
+            .any(|e| e.url == entry.url && e.visited_at == entry.visited_at)
+        {
+            merged.push(entry);
+        }
+    }
+    merged.sort_by_key(|e| e.visited_at);
+    let len = merged.len();
+    if len > HISTORY_LIMIT {
+        merged.drain(0..(len - HISTORY_LIMIT));
+    }
+    merged
+}
+
+// Per-host, per-kind fill-the-gaps merge - unlike Settings' whole-blob
+// newer-wins, each of the four permission fields is treated as its own
+// independent fact. An explicit local decision always wins (a remote
+// copy never overwrites a choice already made on this machine); a
+// remote decision only fills in a field this machine has no opinion on
+// yet (None). This mirrors merge_bookmarks/merge_history's "union,
+// nothing gets silently overwritten" spirit better than newer-wins would
+// here - there's no single "settings changed at time T" moment for a
+// pile of independent per-site facts to compare against.
+fn merge_site_permissions(
+    mut local: std::collections::HashMap<String, SitePermissions>,
+    remote: std::collections::HashMap<String, SitePermissions>,
+) -> std::collections::HashMap<String, SitePermissions> {
+    for (host, remote_perms) in remote {
+        let entry = local.entry(host).or_default();
+        if entry.camera.is_none() {
+            entry.camera = remote_perms.camera;
+        }
+        if entry.microphone.is_none() {
+            entry.microphone = remote_perms.microphone;
+        }
+        if entry.geolocation.is_none() {
+            entry.geolocation = remote_perms.geolocation;
+        }
+        if entry.notifications.is_none() {
+            entry.notifications = remote_perms.notifications;
+        }
+    }
+    local
+}
+
+// Backs the Settings panel's single "Sync now" button - pulls whatever's
+// currently in the cloud folder (if anything), merges it into local data
+// (see merge_bookmarks/merge_history above for bookmarks/history; settings
+// use newer-wins, below), then pushes the merged result back up. One
+// button rather than separate Pull/Push: "sync" is the mental model people
+// actually have here, and two similarly-named buttons would just invite
+// clicking the wrong one and pushing a stale local copy over someone
+// else's newer changes.
+#[tauri::command]
+fn sync_now(webview: tauri::Webview, app: tauri::AppHandle) -> Result<i64, String> {
+    require_chrome(&webview)?;
+
+    let vault_state = app.state::<SharedVaultState>();
+    let vst = vault_state.lock_recover();
+    let key = vst
+        .key
+        .ok_or_else(|| "Vault is locked. Unlock it in Passwords to sync.".to_string())?;
+
+    let folder = {
+        let state = app.state::<SharedAppData>();
+        let st = state.lock_recover();
+        st.data
+            .settings
+            .sync_folder
+            .clone()
+            .ok_or_else(|| "No sync folder chosen yet.".to_string())?
+    };
+
+    let folder_path = PathBuf::from(&folder);
+    if !folder_path.is_dir() {
+        return Err("Sync folder no longer exists - choose it again.".to_string());
+    }
+
+    // Pull: only if a remote file exists, decrypts under this vault's
+    // key, and parses as a payload we recognize. A missing, corrupt, or
+    // foreign file there shouldn't block syncing - it just means there's
+    // nothing usable to merge in yet, same as no file at all (e.g. the
+    // very first push from a brand new folder).
+    let remote_file: Option<SyncFile> = fs::read_to_string(sync_file_path(&folder))
+        .ok()
+        .and_then(|s| serde_json::from_str::<SyncFile>(&s).ok());
+    let remote_payload: Option<(i64, SyncPayloadPlaintext)> = remote_file.and_then(|file| {
+        vault_decrypt(&key, &file.nonce, &file.ciphertext)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<SyncPayloadPlaintext>(&bytes).ok())
+            .map(|payload| (file.saved_at, payload))
+    });
+
+    let merged_payload = {
+        let state = app.state::<SharedAppData>();
+        let mut st = state.lock_recover();
+
+        if let Some((remote_saved_at, remote)) = remote_payload {
+            let local_bookmarks = std::mem::take(&mut st.data.bookmarks);
+            let local_history = std::mem::take(&mut st.data.history);
+            let local_site_permissions = std::mem::take(&mut st.data.site_permissions);
+            st.data.bookmarks = merge_bookmarks(local_bookmarks, remote.bookmarks);
+            st.data.history = merge_history(local_history, remote.history);
+            st.data.site_permissions = merge_site_permissions(local_site_permissions, remote.site_permissions);
+
+            // Newer-wins on settings as a whole: sync_last_pushed_at is
+            // this machine's own record of "what I last knew to be in
+            // sync" - if the remote snapshot postdates that, someone
+            // else's more recent settings change should win; otherwise
+            // keep local settings, which may hold unsynced changes of
+            // their own. sync_folder/sync_last_pushed_at are excluded
+            // either way - those describe this machine's own sync
+            // configuration and history, never shared state, so they
+            // must never be overwritten by a remote copy.
+            let remote_is_newer = match st.data.settings.sync_last_pushed_at {
+                None => true,
+                Some(local_pushed_at) => remote_saved_at > local_pushed_at,
+            };
+            if remote_is_newer {
+                let sync_folder = st.data.settings.sync_folder.clone();
+                let sync_last_pushed_at = st.data.settings.sync_last_pushed_at;
+                st.data.settings = remote.settings;
+                st.data.settings.sync_folder = sync_folder;
+                st.data.settings.sync_last_pushed_at = sync_last_pushed_at;
+            }
+        }
+
+        SyncPayloadPlaintext {
+            bookmarks: st.data.bookmarks.clone(),
+            history: st.data.history.clone(),
+            settings: st.data.settings.clone(),
+            site_permissions: st.data.site_permissions.clone(),
+        }
+    };
+    save_persisted_data(&app);
+
+    let plaintext_bytes = serde_json::to_vec(&merged_payload).map_err(|e| e.to_string())?;
+    let (nonce, ciphertext) = vault_encrypt(&key, &plaintext_bytes)?;
+    let saved_at = now_ms();
+    let file = SyncFile { nonce, ciphertext, saved_at };
+    let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    fs::write(sync_file_path(&folder), json).map_err(|e| e.to_string())?;
+
+    {
+        let state = app.state::<SharedAppData>();
+        let mut st = state.lock_recover();
+        st.data.settings.sync_last_pushed_at = Some(saved_at);
+    }
+    save_persisted_data(&app);
+
+    Ok(saved_at)
 }
 
 // --- Tabs (unchanged behaviour, plus history hooks below) ---
@@ -2992,6 +3536,11 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
     // matched requests.
     #[cfg(windows)]
     watch_for_requests(&content_webview, app.clone(), label.clone());
+
+    // Per-site permission memory (see watch_for_permission_requests) -
+    // same install pattern as the two hooks above.
+    #[cfg(windows)]
+    watch_for_permission_requests(&content_webview, app.clone());
 
     {
         let state = app.state::<SharedTabState>();
@@ -3616,6 +4165,261 @@ fn watch_for_requests(webview: &tauri::Webview, app: tauri::AppHandle, label: St
         let mut token: i64 = 0;
         unsafe {
             let _ = core.add_WebResourceRequested(&handler, &mut token);
+        }
+    });
+}
+
+// Per-site permission memory's enforcement half (see the module comment
+// above SitePermissions for the overall design). add_PermissionRequested
+// lives on the base ICoreWebView2 interface - same interface watch_for_
+// crash already gets via controller.CoreWebView2(), no ICoreWebView2_2
+// cast needed here unlike watch_for_requests above.
+//
+// Only four of WebView2's permission kinds are handled (camera,
+// microphone, geolocation, notifications - the four covered by this
+// feature); anything else (autoplay, clipboard-read, local fonts, etc.)
+// falls through the match's `_` arm untouched, leaving WebView2's own
+// default behavior for those exactly as it was before this function
+// existed.
+//
+// For each of those four kinds, this always calls SetSavesInProfile(false)
+// (via ICoreWebView2PermissionRequestedEventArgs3 - added after the base
+// args interface, needs a .cast() up) before looking anything up. Without
+// that, WebView2 persists whatever answer it settles on - ours or its own
+// native prompt's - into its own engine-level permission store and simply
+// stops firing PermissionRequested for that origin+kind afterward,
+// regardless of what Kite's own site_permissions map says later. An
+// earlier version of this feature discovered that the hard way: clearing
+// a decision back to "ask every time" in Settings had no effect, because
+// WebView2 never asked again to find out. SetSavesInProfile(false) turns
+// that persistence off per-request, so Kite's own site_permissions map
+// stays the *only* place a decision is remembered - exactly what this
+// feature is for. (An earlier revision worked around the same problem
+// from the other side, via ICoreWebView2Profile4::SetPermissionState after
+// the fact - that was real COM surface area doing a job this one call
+// already does at the source; removed once this was found.)
+//
+// When Kite has a recorded decision, this also calls SetState and returns
+// without taking a deferral - WebView2 treats an undeferred handler
+// return as "the state I see now is final", so a synchronous SetState is
+// enough (confirmed against the ProcessFailedEventHandler pattern
+// watch_for_crash already uses for a similarly synchronous decision).
+// When there's no recorded decision yet, SetState is left untouched -
+// WebView2 still shows its own native permission prompt for that request,
+// same as if this feature didn't exist, just now guaranteed to ask again
+// next time too rather than silently adopting whatever the person picked
+// once. Capturing that native prompt's own answer (via GetDeferral) so a
+// first-time choice gets remembered automatically is a possible later
+// addition, not this pass - recording a decision happens through
+// set_site_permission (the Settings "Site permissions" list) instead.
+#[cfg(windows)]
+fn watch_for_permission_requests(webview: &tauri::Webview, app: tauri::AppHandle) {
+    let _ = webview.with_webview(move |platform_webview| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2PermissionRequestedEventArgs3, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+            COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            COREWEBVIEW2_PERMISSION_STATE_DENY,
+        };
+        use webview2_com::PermissionRequestedEventHandler;
+        // .cast() (QueryInterface) is a trait method, not an inherent one -
+        // needs this import, same as watch_for_requests's own ICoreWebView2_2
+        // cast a few hundred lines up.
+        use windows::core::Interface;
+
+        let controller = platform_webview.controller();
+        let core = match unsafe { controller.CoreWebView2() } {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[kite] watch_for_permission_requests: couldn't get CoreWebView2: {e:?}");
+                return;
+            }
+        };
+
+        let app_for_handler = app.clone();
+
+        let handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else { return Ok(()) };
+
+            let mut kind = Default::default();
+            if unsafe { args.PermissionKind(&mut kind) }.is_err() {
+                return Ok(());
+            }
+            let field = match kind {
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA => "camera",
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE => "microphone",
+                COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION => "geolocation",
+                COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS => "notifications",
+                _ => return Ok(()), // not one of the four kinds this feature manages
+            };
+
+            // See the function doc comment above for why this matters -
+            // without it, WebView2's own engine-level store would end up
+            // disagreeing with Kite's site_permissions the moment a
+            // decision gets changed or cleared.
+            if let Ok(args3) = args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
+                unsafe {
+                    let _ = args3.SetSavesInProfile(false);
+                }
+            }
+
+            // Same PWSTR -> String idiom watch_for_requests already uses
+            // for WebResourceRequestedEventArgs::Request()::Uri - Args::
+            // Uri here is the same shape (out-param PWSTR), just on a
+            // different COM interface.
+            let mut uri_ptr = windows::core::PWSTR::null();
+            let uri = unsafe {
+                if args.Uri(&mut uri_ptr).is_ok() && !uri_ptr.is_null() {
+                    uri_ptr.to_string().unwrap_or_default()
+                } else {
+                    return Ok(());
+                }
+            };
+            let Some(host) = url::Url::parse(&uri).ok().and_then(|u| u.host_str().map(normalize_host)) else {
+                return Ok(());
+            };
+
+            let decision = {
+                let state = app_for_handler.state::<SharedAppData>();
+                let st = state.lock_recover();
+                st.data.site_permissions.get(&host).and_then(|p| match field {
+                    "camera" => p.camera,
+                    "microphone" => p.microphone,
+                    "geolocation" => p.geolocation,
+                    "notifications" => p.notifications,
+                    _ => unreachable!(),
+                })
+            };
+
+            if let Some(decision) = decision {
+                let win_state = match decision {
+                    SitePermissionState::Allow => COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                    SitePermissionState::Deny => COREWEBVIEW2_PERMISSION_STATE_DENY,
+                };
+                unsafe {
+                    let _ = args.SetState(win_state);
+                }
+            }
+            // No recorded decision - leave state untouched; see the
+            // function doc comment above for why that's deliberate.
+
+            Ok(())
+        }));
+
+        let mut token: i64 = 0;
+        unsafe {
+            let _ = core.add_PermissionRequested(&handler, &mut token);
+        }
+    });
+}
+
+// The belt to SetSavesInProfile's suspenders above. SetSavesInProfile(false)
+// only stops WebView2 from caching a decision *from this point forward* -
+// it does nothing to clear a decision WebView2 already cached before that
+// fix existed (e.g. from earlier testing, or from any origin+kind pair
+// resolved before this feature had SetSavesInProfile at all). Without
+// this function, a stale cached answer from before just keeps getting
+// silently honored forever, with WebView2 never asking - or calling
+// SetSavesInProfile - again for that origin+kind, since it already
+// considers the question settled. Confirmed the hard way: after clearing
+// a decision back to "ask every time" in Settings, camera on a test site
+// kept resolving instantly to whatever had been cached days earlier,
+// with no prompt and no call into watch_for_permission_requests at all.
+//
+// So this actively resets WebView2's own persisted per-origin store via
+// the separate ICoreWebView2Profile4::SetPermissionState API, called from
+// set_site_permission/remove_site_permissions whenever a person changes
+// something in Settings - independent of, and a different fix from,
+// SetSavesInProfile above. The two together: SetSavesInProfile stops new
+// staleness from accumulating; this clears out whatever's already there.
+//
+// Deliberately fire-and-forget (no wait_for_async_operation, no blocking
+// on the result) - an earlier version of this exact function blocked on
+// the async completion and froze Kite ("Not Responding") by nesting a
+// message-pump wait inside with_webview's own call chain. There's nothing
+// in the UI that depends on this having finished by the time the command
+// returns (the Settings list reads Kite's own site_permissions map, not
+// WebView2's engine-level store), so there's nothing to gain by waiting -
+// only risk.
+#[cfg(windows)]
+fn sync_webview2_permission_state(
+    app: &tauri::AppHandle,
+    host: &str,
+    kind: &str,
+    decision: Option<SitePermissionState>,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile4, ICoreWebView2_13, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+        COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+        COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_PERMISSION_STATE_DEFAULT, COREWEBVIEW2_PERMISSION_STATE_DENY,
+    };
+    use webview2_com::SetPermissionStateCompletedHandler;
+    use windows::core::{Interface, HSTRING};
+
+    let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) else {
+        return;
+    };
+
+    let permission_kind = match kind {
+        "camera" => COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+        "microphone" => COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+        "geolocation" => COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+        "notifications" => COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
+        _ => return,
+    };
+    // None -> DEFAULT is the reset-to-"ask again" case that motivated
+    // this whole function - see the doc comment above.
+    let permission_state = match decision {
+        Some(SitePermissionState::Allow) => COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        Some(SitePermissionState::Deny) => COREWEBVIEW2_PERMISSION_STATE_DENY,
+        None => COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
+    };
+    let origin = format!("https://{host}");
+    let host_owned = host.to_string();
+    let kind_owned = kind.to_string();
+    // Separate clones for the inner (async completion) closure below,
+    // since a `move` closure takes ownership at creation time regardless
+    // of when/whether it runs - host_owned/kind_owned need to survive
+    // untouched for the outer closure's own error branch further down.
+    let host_for_completion = host_owned.clone();
+    let kind_for_completion = kind_owned.clone();
+
+    // No channel, no rx.recv() - with_webview's closure fires the async
+    // call and returns immediately without waiting for it to land. Errors
+    // still get logged, just asynchronously once WebView2 gets around to
+    // invoking the completed handler on its own.
+    let _ = chrome.with_webview(move |platform_webview| {
+        let controller = platform_webview.controller();
+        let outcome: webview2_com::Result<()> = (|| {
+            let core = unsafe { controller.CoreWebView2() }?;
+            let core13: ICoreWebView2_13 = core.cast()?;
+            let profile = unsafe { core13.Profile() }?;
+            let profile4: ICoreWebView2Profile4 = profile.cast()?;
+            let origin_hstring = HSTRING::from(origin.as_str());
+
+            let completed_handler = SetPermissionStateCompletedHandler::create(Box::new(move |result| {
+                if let Err(e) = result {
+                    eprintln!(
+                        "[kite] sync_webview2_permission_state({host_for_completion}, {kind_for_completion}) completion: {e:?}"
+                    );
+                }
+                Ok(())
+            }));
+
+            unsafe {
+                profile4.SetPermissionState(permission_kind, &origin_hstring, permission_state, &completed_handler)
+            }
+            .map_err(webview2_com::Error::WindowsError)
+        })();
+
+        // Errors from actually *starting* the call (as opposed to errors
+        // reported later via the completed handler above) surface here,
+        // synchronously - still just logged, never propagated back to the
+        // command's Result, since a failure here shouldn't block the
+        // (already-succeeded) PersistedData write this is layered on top of.
+        if let Err(e) = outcome {
+            eprintln!("[kite] sync_webview2_permission_state({host_owned}, {kind_owned}): {e:?}");
         }
     });
 }
@@ -5583,8 +6387,14 @@ fn main() {
             set_homepage,
             set_content_blocking,
             toggle_site_allowlist,
+            get_site_permissions,
+            set_site_permission,
+            remove_site_permissions,
             refresh_blocklist,
             choose_downloads_dir,
+            sync_choose_folder,
+            sync_status,
+            sync_now,
             get_tabs,
             go_home,
             show_library,
