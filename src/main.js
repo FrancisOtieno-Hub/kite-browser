@@ -178,6 +178,17 @@ const PRIVATE_BADGE_SVG =
 const SUSPENDED_BADGE_SVG =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z'/%3E%3C/svg%3E";
 
+// Per-kind icons for the custom permission prompt (see PERMISSION_KIND_ICONS
+// below) - same minimalist stroke style as SUSPENDED_BADGE_SVG above.
+const PERMISSION_ICON_CAMERA_SVG =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z'/%3E%3Ccircle cx='12' cy='13' r='4'/%3E%3C/svg%3E";
+const PERMISSION_ICON_MICROPHONE_SVG =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z'/%3E%3Cpath d='M19 10v2a7 7 0 0 1-14 0v-2'/%3E%3Cline x1='12' y1='19' x2='12' y2='23'/%3E%3Cline x1='8' y1='23' x2='16' y2='23'/%3E%3C/svg%3E";
+const PERMISSION_ICON_LOCATION_SVG =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z'/%3E%3Ccircle cx='12' cy='10' r='3'/%3E%3C/svg%3E";
+const PERMISSION_ICON_NOTIFICATIONS_SVG =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9'/%3E%3Cpath d='M13.73 21a2 2 0 0 1-3.46 0'/%3E%3C/svg%3E";
+
 function renderTabs(tabs, active) {
   activeLabel = active;
   const activeTab = tabs.find((t) => t.label === active);
@@ -2245,6 +2256,151 @@ tabSearchOverlay.addEventListener("click", (e) => {
 // global shortcut in Rust (so it fires no matter which webview - chrome or
 // a content tab - currently has focus) and arrives via the "shortcut"
 // event's "toggle_tab_search" case in runShortcutAction above.
+
+// ---------------------------------------------------------------------
+// Custom permission prompt (Stage 2) - replaces WebView2's own native
+// permission bar, which can't be repositioned or restyled via any public
+// API. See PendingPermissionRequest's own doc comment in main.rs for the
+// Rust half of this: watch_for_permission_requests takes a WebView2
+// deferral and emits "permission-requested" (id/host/kind) instead of
+// leaving state untouched whenever a site asks for camera/microphone/
+// location/notifications and there's no already-remembered decision.
+// This file's job is just to show something for that id and eventually
+// call resolve_permission_prompt with a decision - same full-window
+// chrome takeover as show_tab_search/hide_tab_search above, via this
+// feature's own show_permission_prompt/hide_permission_prompt commands
+// (kept separate from tab_search_open/library_tab on the Rust side, but
+// coordinated with both - see TabState's own comments).
+// ---------------------------------------------------------------------
+
+const PERMISSION_KIND_ICONS = {
+  camera: PERMISSION_ICON_CAMERA_SVG,
+  microphone: PERMISSION_ICON_MICROPHONE_SVG,
+  geolocation: PERMISSION_ICON_LOCATION_SVG,
+  notifications: PERMISSION_ICON_NOTIFICATIONS_SVG,
+};
+
+// "Use your camera" / "Know your location" etc. - SITE_PERMISSION_KINDS
+// (defined above, for the Settings list) has the short label ("Camera"),
+// this needs the fuller "wants to ___" phrasing instead.
+const PERMISSION_KIND_PHRASES = {
+  camera: "use your camera",
+  microphone: "use your microphone",
+  geolocation: "know your location",
+  notifications: "send you notifications",
+};
+
+const permissionPromptOverlay = document.getElementById("permission-prompt-overlay");
+const permissionPromptIcon = document.getElementById("permission-prompt-icon");
+const permissionPromptHost = document.getElementById("permission-prompt-host");
+const permissionPromptKindText = document.getElementById("permission-prompt-kind-text");
+const permissionPromptRememberInput = document.getElementById("permission-prompt-remember-input");
+const permissionPromptBlockBtn = document.getElementById("permission-prompt-block-btn");
+const permissionPromptAllowBtn = document.getElementById("permission-prompt-allow-btn");
+
+// Requests that arrived while one was already showing - {id, host, kind}
+// objects, same shape as the "permission-requested" event payload.
+// FIFO: shown in the order they were asked for, same as browsers
+// generally queue multiple permission prompts rather than picking an
+// order.
+let permissionPromptQueue = [];
+let permissionPromptCurrent = null; // the entry actually on screen right now, or null
+
+function openPermissionPrompt(entry) {
+  permissionPromptCurrent = entry;
+  permissionPromptHost.textContent = entry.host;
+  permissionPromptKindText.textContent =
+    " wants to " + (PERMISSION_KIND_PHRASES[entry.kind] || entry.kind);
+  permissionPromptIcon.src = PERMISSION_KIND_ICONS[entry.kind] || "";
+  // Default to remembering the choice - matches how this feature's own
+  // Settings > Site permissions list works (a decision made there sticks
+  // until changed back to "Ask every time"), so Allow/Block here behaves
+  // the same way a decision made through Settings would.
+  permissionPromptRememberInput.checked = true;
+  permissionPromptOverlay.classList.add("open");
+}
+
+// Called once, the first time a request needs to be shown - whether or
+// not chrome is already full-window doesn't matter to show_permission_prompt
+// (it's idempotent: setting the same size/position again is harmless), so
+// this doesn't need to check permissionPromptCurrent first.
+function showFirstPermissionPrompt(entry) {
+  // Same "only one overlay at a time" convention as openTabSearch above -
+  // a permission decision is the more urgent of the two, so it wins
+  // rather than being silently swallowed by whichever was already open.
+  if (libraryPanel.classList.contains("open")) closeLibrary();
+  if (tabSearchOverlay.classList.contains("open")) closeTabSearch();
+
+  invoke("show_permission_prompt")
+    .then(() => openPermissionPrompt(entry))
+    .catch((err) => {
+      console.error("[kite] show_permission_prompt failed:", err);
+      // Couldn't show it - still try to resolve it (as a deny, unremembered)
+      // rather than leaving WebView2's deferral - and the site's pending
+      // getUserMedia()/Notification.requestPermission() promise - hanging
+      // forever with no way for the person to ever answer it.
+      invoke("resolve_permission_prompt", { id: entry.id, decision: "deny", remember: false }).catch(
+        (err2) => console.error("[kite] resolve_permission_prompt (fallback deny) failed:", err2),
+      );
+    });
+}
+
+function closePermissionPromptOverlay() {
+  permissionPromptCurrent = null;
+  permissionPromptOverlay.classList.remove("open");
+  invoke("hide_permission_prompt").catch((err) =>
+    console.error("[kite] hide_permission_prompt failed:", err),
+  );
+}
+
+// Answers whichever request is currently showing, then either shows the
+// next queued one (chrome stays full-window throughout - no need to call
+// show_permission_prompt again) or closes the overlay entirely if the
+// queue's empty.
+function resolveCurrentPermissionPrompt(decision) {
+  const entry = permissionPromptCurrent;
+  if (!entry) return;
+  const remember = permissionPromptRememberInput.checked;
+  invoke("resolve_permission_prompt", { id: entry.id, decision, remember }).catch((err) =>
+    console.error("[kite] resolve_permission_prompt failed:", err),
+  );
+  const next = permissionPromptQueue.shift();
+  if (next) {
+    openPermissionPrompt(next);
+  } else {
+    closePermissionPromptOverlay();
+  }
+}
+
+permissionPromptBlockBtn.addEventListener("click", () => resolveCurrentPermissionPrompt("deny"));
+permissionPromptAllowBtn.addEventListener("click", () => resolveCurrentPermissionPrompt("allow"));
+
+// Dismissing without an explicit choice (Escape or clicking the dimmed
+// backdrop) resolves as a plain "deny, don't remember it" rather than
+// just hiding the box - leaving the underlying deferral unresolved would
+// leave the site's own getUserMedia()/Notification.requestPermission()
+// promise hanging forever, and leak the pending entry (and the raw COM
+// pointers it holds - see PendingPermissionRequest in main.rs) for the
+// rest of the session.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && permissionPromptOverlay.classList.contains("open")) {
+    e.preventDefault();
+    resolveCurrentPermissionPrompt("deny");
+  }
+});
+
+permissionPromptOverlay.addEventListener("click", (e) => {
+  if (e.target === permissionPromptOverlay) resolveCurrentPermissionPrompt("deny");
+});
+
+listen("permission-requested", (event) => {
+  const entry = event.payload; // {id, host, kind}
+  if (permissionPromptCurrent) {
+    permissionPromptQueue.push(entry);
+  } else {
+    showFirstPermissionPrompt(entry);
+  }
+});
 
 // Prime the tab bar and address bar on load too - relying solely on the
 // tabs-changed/url-changed events pushed from Rust risks losing the very
