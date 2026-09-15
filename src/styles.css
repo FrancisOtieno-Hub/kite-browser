@@ -1341,3 +1341,109 @@ body.private-active .shield-badge.site-off {
 .tab-search-empty.visible {
   display: block;
 }
+
+/* --- Custom permission prompt (Stage 2) ---
+   Same full-window-takeover shape as .tab-search-overlay above (fixed,
+   inset: 0, dimmed background, centered flex child) - reused wholesale,
+   just with its own smaller card instead of a search box, since a
+   permission decision needs far less room than a tab list. */
+.permission-prompt-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: var(--tab-bar-bg);
+  z-index: 2100; /* above the tab-search overlay's 2000 - see main.js's
+                     own comment on why a pending permission always wins
+                     if it somehow arrives while another overlay is open */
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 120px;
+}
+
+.permission-prompt-overlay.open {
+  display: flex;
+  animation: tab-search-fade-in 0.12s ease-out;
+}
+
+.permission-prompt-overlay.open .permission-prompt-box {
+  animation: tab-search-rise-in 0.14s ease-out;
+}
+
+.permission-prompt-box {
+  width: 340px;
+  max-width: 90vw;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(22, 33, 58, 0.25);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 28px 24px 20px;
+  text-align: center;
+}
+
+.permission-prompt-icon {
+  width: 32px;
+  height: 32px;
+  margin-bottom: 14px;
+  color: var(--accent);
+}
+
+.permission-prompt-text {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.permission-prompt-host {
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.permission-prompt-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 20px;
+  cursor: pointer;
+}
+
+.permission-prompt-actions {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.permission-prompt-btn {
+  flex: 1;
+  border-radius: 6px;
+  padding: 9px 0;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.permission-prompt-btn-secondary {
+  border: 1px solid var(--toolbar-border);
+  background: #fff;
+  color: var(--text);
+}
+
+.permission-prompt-btn-secondary:hover {
+  background: var(--btn-hover);
+}
+
+.permission-prompt-btn-primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.permission-prompt-btn-primary:hover {
+  background: #2f68e0; /* --accent, darkened by hand - no existing hover
+                           token for a filled accent button anywhere else
+                           in this file to reuse. */
+}
