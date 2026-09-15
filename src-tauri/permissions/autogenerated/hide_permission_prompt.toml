@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT
+"$schema" = "../../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-hide-permission-prompt"
+description = "Enables the hide_permission_prompt command without any pre-configured scope."
+commands.allow = ["hide_permission_prompt"]
+
+[[permission]]
+identifier = "deny-hide-permission-prompt"
+description = "Denies the hide_permission_prompt command without any pre-configured scope."
+commands.deny = ["hide_permission_prompt"]

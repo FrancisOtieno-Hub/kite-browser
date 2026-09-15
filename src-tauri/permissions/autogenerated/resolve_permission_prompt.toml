@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT
+"$schema" = "../../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-resolve-permission-prompt"
+description = "Enables the resolve_permission_prompt command without any pre-configured scope."
+commands.allow = ["resolve_permission_prompt"]
+
+[[permission]]
+identifier = "deny-resolve-permission-prompt"
+description = "Denies the resolve_permission_prompt command without any pre-configured scope."
+commands.deny = ["resolve_permission_prompt"]
