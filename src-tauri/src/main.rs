@@ -197,6 +197,15 @@ struct TabState {
     // bool, and always closes itself (see hide_tab_search) rather than
     // reopening automatically the way a parked library view does.
     tab_search_open: bool,
+    // Stage 2 of the custom permission-prompt work (see
+    // PendingPermissionRequest's own doc comment further down this file):
+    // true while the centered Allow/Block prompt is showing, which - like
+    // library_tab and tab_search_open - means chrome is temporarily
+    // resized to fill the whole window and the active tab's own webview
+    // is parked off-screen underneath it. Plain bool, same reasoning as
+    // tab_search_open: opened, answered (or dismissed), closed - never
+    // pinned to a tab or reopened automatically.
+    permission_prompt_open: bool,
     // URLs of recently closed tabs, most-recent-last, for
     // reopen_closed_tab (Ctrl+Shift+T) - in-memory only, same as the
     // favicon fetch-dedup cache, since a "recently closed" list that
@@ -2442,6 +2451,141 @@ fn remove_site_permissions(webview: tauri::Webview, app: tauri::AppHandle, host:
     Ok(())
 }
 
+// Resolves a pending permission request created by watch_for_permission_
+// requests when there was no recorded decision (Stage 1 of the custom
+// prompt UI - see PendingPermissionRequest's own doc comment further
+// down this file). `decision` is "allow" or "deny"; `remember` mirrors
+// the future prompt's "remember this choice" checkbox - when true this
+// also records the decision via set_site_permission, same as picking it
+// from the Settings list would. For Stage 1 (no UI yet) this is called
+// manually from DevTools to confirm the plumbing works end-to-end.
+//
+// Kept as a thin, always-compilable wrapper around a #[cfg(windows)]
+// implementation - same split as sync_webview2_permission_state elsewhere
+// in this file - so the command can stay unconditionally listed in
+// generate_handler! without needing to cfg-split that macro invocation.
+#[tauri::command]
+fn resolve_permission_prompt(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    id: u64,
+    decision: String,
+    remember: bool,
+) -> Result<(), String> {
+    require_chrome(&webview)?;
+    #[cfg(windows)]
+    {
+        resolve_permission_prompt_windows(webview, app, id, decision, remember)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (webview, app, id, decision, remember);
+        Err("Permission prompts require Windows/WebView2.".to_string())
+    }
+}
+
+#[cfg(windows)]
+fn resolve_permission_prompt_windows(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    id: u64,
+    decision: String,
+    remember: bool,
+) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Deferral, ICoreWebView2PermissionRequestedEventArgs,
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY,
+    };
+    use windows::core::Interface;
+
+    let parsed_decision = match decision.as_str() {
+        "allow" => SitePermissionState::Allow,
+        "deny" => SitePermissionState::Deny,
+        other => return Err(format!("unknown permission decision: {other}")),
+    };
+
+    // Removed (not just read) up front, before any COM work - a given
+    // deferral can only be completed once, so a request has to leave the
+    // pending map the moment it's claimed, whether or not the COM calls
+    // below succeed.
+    let pending = {
+        let state = app.state::<SharedPendingPermissionRequests>();
+        let mut st = state.lock_recover();
+        st.map.remove(&id)
+    };
+    let Some(pending) = pending else {
+        return Err(format!("no pending permission request with id {id}"));
+    };
+
+    // SetState/Complete have to run on the same thread that owns the
+    // WebView2 controller (the thread watch_for_permission_requests'
+    // event handler itself ran on when it captured these pointers) -
+    // confirmed at runtime that WebView2's interfaces aren't registered
+    // for standard COM marshaling (AgileReference::new on them fails
+    // with "Failed to find proxy registration", HRESULT 0x80040155), so
+    // calling from an arbitrary thread the way an ordinary marshalable
+    // COM interface would allow isn't an option - see
+    // PendingPermissionRequest's own doc comment for the full story.
+    // with_webview is this app's own established mechanism for hopping
+    // onto that thread; which specific webview .with_webview() is
+    // called on doesn't matter here (the closure below ignores
+    // platform_webview entirely and only touches the args/deferral
+    // reconstructed from the stored raw pointers).
+    //
+    // Unlike sync_webview2_permission_state's fire-and-forget use of
+    // with_webview further down this file, this can't skip waiting for
+    // the result - the whole point is to actually answer the pending
+    // permission request before this command returns - so this uses a
+    // channel the same way choose_downloads_dir does elsewhere in this
+    // file: safe to block on because this command is deliberately NOT
+    // declared `async fn`, so Tauri runs it on its blocking-command
+    // thread pool rather than the async runtime or the UI thread. (This
+    // is a different situation from the with_webview-plus-blocking-wait
+    // combination that froze Kite once before - see
+    // sync_webview2_permission_state's own doc comment - that blocked on
+    // a WebView2 *async completion callback* from inside a with_webview
+    // closure already running on the UI thread; here the block is on a
+    // plain synchronous COM call, waited on from a background thread
+    // that was never at risk of stalling the UI to begin with.)
+    let (tx, rx) = std::sync::mpsc::channel();
+    let args_ptr = pending.args_ptr;
+    let deferral_ptr = pending.deferral_ptr;
+    let win_state = match parsed_decision {
+        SitePermissionState::Allow => COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        SitePermissionState::Deny => COREWEBVIEW2_PERMISSION_STATE_DENY,
+    };
+    let dispatched = webview.with_webview(move |_platform_webview| {
+        // SAFETY: args_ptr/deferral_ptr were produced by
+        // Interface::into_raw() on these exact types in
+        // watch_for_permission_requests and haven't been touched since -
+        // from_raw() taking ownership back here (no extra AddRef) is
+        // exactly balanced with that into_raw(), and this closure runs
+        // on the same thread those objects were created on.
+        let result: windows::core::Result<()> = (|| unsafe {
+            let args = ICoreWebView2PermissionRequestedEventArgs::from_raw(args_ptr as *mut _);
+            let deferral = ICoreWebView2Deferral::from_raw(deferral_ptr as *mut _);
+            args.SetState(win_state)?;
+            deferral.Complete()
+        })();
+        let _ = tx.send(result);
+    });
+    if dispatched.is_err() {
+        return Err("failed to reach the browser's webview thread".to_string());
+    }
+    rx.recv()
+        .map_err(|e| format!("permission resolution never completed: {e}"))?
+        .map_err(|e| format!("SetState/Complete failed: {e:?}"))?;
+
+    // "Remember this choice" - reuses set_site_permission wholesale
+    // (normalizes the host, persists it, and clears/syncs WebView2's own
+    // engine-level store) rather than duplicating any of that here.
+    if remember {
+        set_site_permission(webview, app, pending.host, pending.kind, Some(decision))?;
+    }
+
+    Ok(())
+}
+
 // Hand-picked additions merged into every refresh, on top of whatever
 // comes back from StevenBlack/hosts - see blocklist.txt's own header for
 // why these specific ones are called out (common trackers not reliably
@@ -3563,12 +3707,19 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
 }
 
 fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
-    let (prev_active, win_w, win_h, library_tab, tab_search_open) = {
+    let (prev_active, win_w, win_h, library_tab, tab_search_open, permission_prompt_open) = {
         let state = app.state::<SharedTabState>();
         let mut st = state.lock_recover();
         let prev = st.active.clone();
         st.active = label.to_string();
-        (prev, st.window_size.0, st.window_size.1, st.library_tab.clone(), st.tab_search_open)
+        (
+            prev,
+            st.window_size.0,
+            st.window_size.1,
+            st.library_tab.clone(),
+            st.tab_search_open,
+            st.permission_prompt_open,
+        )
     };
 
     // The Library Panel (History/Bookmarks/Downloads/Settings) is a
@@ -3603,11 +3754,12 @@ fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
         // that tab. Chrome being shrunk means none of the frontend's
         // still-"open" state is even visible in the meantime regardless.
         //
-        // Skipped while tab search is open: chrome needs to stay
-        // full-window for the overlay regardless of library_tab state in
-        // that case, and hide_tab_search (not this function) is what
-        // shrinks it back down once the overlay itself actually closes.
-        if !tab_search_open {
+        // Skipped while tab search or the permission prompt is open:
+        // chrome needs to stay full-window for whichever overlay is
+        // showing regardless of library_tab state in that case, and that
+        // overlay's own hide_* command (not this function) is what
+        // shrinks it back down once it actually closes.
+        if !tab_search_open && !permission_prompt_open {
             if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
                 let _ = chrome.set_size(LogicalSize::new(win_w, CHROME_HEIGHT));
             }
@@ -3620,17 +3772,18 @@ fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
         }
     }
 
-    // While tab search is open (see show_tab_search/hide_tab_search), the
-    // active tab's own content webview must stay parked off-screen
-    // regardless of which tab just became active - this is exactly the
-    // bug that surfaced when closing the currently-active tab from the
-    // search overlay: activate_tab picks a new active tab under the hood,
-    // and without this guard it would immediately un-park that new tab's
-    // webview and show it, burying the still-open overlay underneath it
-    // (content webviews sit above chrome in z-order - see
-    // show_tab_search's own comment). The overlay's own close path
-    // (hide_tab_search) is what un-parks whatever tab is active *then*.
-    if !is_library_tab && !tab_search_open {
+    // While tab search or the permission prompt is open (see their own
+    // show_*/hide_* commands), the active tab's own content webview must
+    // stay parked off-screen regardless of which tab just became active -
+    // this is exactly the bug that surfaced when closing the
+    // currently-active tab from the search overlay: activate_tab picks a
+    // new active tab under the hood, and without this guard it would
+    // immediately un-park that new tab's webview and show it, burying the
+    // still-open overlay underneath it (content webviews sit above chrome
+    // in z-order - see show_tab_search's own comment). The overlay's own
+    // close path (hide_tab_search / hide_permission_prompt) is what
+    // un-parks whatever tab is active *then*.
+    if !is_library_tab && !tab_search_open && !permission_prompt_open {
         if let Some(webview) = app.get_webview(label) {
             webview
                 .set_position(visible_position())
@@ -4212,8 +4365,103 @@ fn watch_for_requests(webview: &tauri::Webview, app: tauri::AppHandle, label: St
 // first-time choice gets remembered automatically is a possible later
 // addition, not this pass - recording a decision happens through
 // set_site_permission (the Settings "Site permissions" list) instead.
+
+// --- Per-site permission memory: custom prompt UI (Stage 1) ---
+//
+// WebView2's own native permission bar can't be repositioned or
+// restyled via any public API (confirmed via Microsoft's own docs) -
+// this replaces it with Kite's own centered prompt. Stage 1 (this) is
+// just the backend plumbing: watch_for_permission_requests takes a
+// deferral instead of leaving state untouched when there's no recorded
+// decision, stashes it here, and emits "permission-requested" so a
+// (future, Stage 2) frontend prompt can show something and eventually
+// call resolve_permission_prompt. No UI exists yet as of this stage - a
+// request just sits pending, and WebView2's native bar does NOT show
+// (taking the deferral is what suppresses it) until something calls
+// resolve_permission_prompt.
+//
+// The args/deferral COM objects have to survive the gap between "the
+// request came in" (on the WebView2/UI thread) and "the person clicks a
+// button" (whenever resolve_permission_prompt's IPC call lands, on
+// whatever thread Tauri's blocking-command pool runs it on - not
+// guaranteed to be that same thread). The first attempt at this used
+// windows::core::AgileReference<T> to marshal them across that gap -
+// confirmed against windows-core 0.61.0's own source that the API
+// exists and does what its docs say - but that failed at runtime:
+// AgileReference::new() on both these types returns HRESULT
+// 0x80040155, "Failed to find proxy registration for IID". Unlike
+// ordinary COM interfaces with a registered typelib/proxy, WebView2's
+// interfaces were never set up for standard COM marshaling - they're
+// only valid to call from the thread that owns the WebView2 controller,
+// full stop.
+//
+// So instead: store the raw interface pointers as plain usize values,
+// via windows::core::Interface::into_raw() (hands back a *mut c_void
+// without releasing the object's held reference - confirmed against
+// windows-core 0.61.0's own Interface trait source). Moving an integer
+// between threads has no COM-apartment implications, unlike moving the
+// wrapped interface type itself would - the pointers are only ever
+// turned back into live interface objects (via Interface::from_raw(),
+// which takes ownership of that same held reference back rather than
+// adding a new one - exactly balancing the into_raw() call that
+// produced it) inside a with_webview closure in
+// resolve_permission_prompt_windows below, i.e. back on the correct
+// thread, the same with_webview-as-thread-hop mechanism this file's
+// sync_webview2_permission_state already established further down.
+#[cfg(windows)]
+struct PendingPermissionRequest {
+    args_ptr: usize,
+    deferral_ptr: usize,
+    host: String,
+    kind: String,
+    // The content webview's own Tauri label (e.g. "content-3") - not used
+    // for anything at request time, only so close_tab can find and clean
+    // up entries belonging to a tab that's closing. See close_tab's own
+    // sweep of this, mirroring the same thing it already does for
+    // SharedPendingLogins.
+    tab_label: String,
+}
+
+// SAFETY: args_ptr/deferral_ptr are opaque integers, not live interface
+// handles - moving/storing them across threads is just moving data, no
+// different from any other usize. They're only ever reconstituted into
+// actual COM objects (via Interface::from_raw()) inside a with_webview
+// closure that runs on the correct (WebView2 UI) thread - see
+// resolve_permission_prompt_windows. host/kind are plain owned Strings,
+// already Send+Sync on their own.
+#[cfg(windows)]
+unsafe impl Send for PendingPermissionRequest {}
+#[cfg(windows)]
+unsafe impl Sync for PendingPermissionRequest {}
+
+#[cfg(windows)]
+#[derive(Default)]
+struct PendingPermissionRequests {
+    next_id: u64,
+    map: std::collections::HashMap<u64, PendingPermissionRequest>,
+}
+
+#[cfg(windows)]
+type SharedPendingPermissionRequests = Mutex<PendingPermissionRequests>;
+
+// Pushed to the chrome webview so the (future) Stage 2 prompt knows
+// what to render - deliberately just id/host/kind, no COM types (those
+// never leave Rust - see PendingPermissionRequest above).
+#[cfg(windows)]
+#[derive(Clone, Serialize)]
+struct PermissionPromptPayload {
+    id: u64,
+    host: String,
+    kind: String,
+}
+
 #[cfg(windows)]
 fn watch_for_permission_requests(webview: &tauri::Webview, app: tauri::AppHandle) {
+    // Captured before the with_webview closure below (which needs `move`
+    // and can't hold a borrow of `webview` itself) - see close_tab's own
+    // sweep of this tab's entries in SharedPendingPermissionRequests,
+    // which is what this label is actually for.
+    let tab_label = webview.label().to_string();
     let _ = webview.with_webview(move |platform_webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             ICoreWebView2PermissionRequestedEventArgs3, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
@@ -4224,7 +4472,10 @@ fn watch_for_permission_requests(webview: &tauri::Webview, app: tauri::AppHandle
         use webview2_com::PermissionRequestedEventHandler;
         // .cast() (QueryInterface) is a trait method, not an inherent one -
         // needs this import, same as watch_for_requests's own ICoreWebView2_2
-        // cast a few hundred lines up.
+        // cast a few hundred lines up. Also brings in .into_raw(), used
+        // below to stash args/deferral across the gap until
+        // resolve_permission_prompt - see PendingPermissionRequest's own
+        // doc comment.
         use windows::core::Interface;
 
         let controller = platform_webview.controller();
@@ -4237,6 +4488,7 @@ fn watch_for_permission_requests(webview: &tauri::Webview, app: tauri::AppHandle
         };
 
         let app_for_handler = app.clone();
+        let tab_label_for_handler = tab_label.clone();
 
         let handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
             let Some(args) = args else { return Ok(()) };
@@ -4299,9 +4551,60 @@ fn watch_for_permission_requests(webview: &tauri::Webview, app: tauri::AppHandle
                 unsafe {
                     let _ = args.SetState(win_state);
                 }
+                return Ok(());
             }
-            // No recorded decision - leave state untouched; see the
-            // function doc comment above for why that's deliberate.
+
+            // No recorded decision - Stage 1 of the custom prompt UI (see
+            // PendingPermissionRequest's own doc comment above). Take a
+            // deferral so returning from this handler doesn't finalize
+            // anything, stash args+deferral under a fresh id, and tell the
+            // chrome webview a prompt is needed. Nothing shows a prompt yet
+            // (that's Stage 2) - until resolve_permission_prompt is called
+            // for this id, the request just sits pending; WebView2's own
+            // native bar does NOT show, since taking the deferral is what
+            // suppresses it. Confirmed working end-to-end (manually, via
+            // DevTools) before any Stage 2 UI was built.
+            let deferral = match unsafe { args.GetDeferral() } {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("[kite] watch_for_permission_requests: GetDeferral failed: {e:?}");
+                    return Ok(());
+                }
+            };
+            // into_raw() hands back the pointer without releasing the
+            // reference each of these objects already holds - see
+            // PendingPermissionRequest's own doc comment for why this,
+            // and not AgileReference, is what's stored here.
+            let args_ptr = args.into_raw() as usize;
+            let deferral_ptr = deferral.into_raw() as usize;
+
+            let id = {
+                let state = app_for_handler.state::<SharedPendingPermissionRequests>();
+                let mut st = state.lock_recover();
+                let id = st.next_id;
+                st.next_id += 1;
+                st.map.insert(
+                    id,
+                    PendingPermissionRequest {
+                        args_ptr,
+                        deferral_ptr,
+                        host: host.clone(),
+                        kind: field.to_string(),
+                        tab_label: tab_label_for_handler.clone(),
+                    },
+                );
+                id
+            };
+
+            let _ = app_for_handler.emit_to(
+                MAIN_WEBVIEW_LABEL,
+                "permission-requested",
+                PermissionPromptPayload {
+                    id,
+                    host,
+                    kind: field.to_string(),
+                },
+            );
 
             Ok(())
         }));
@@ -5322,6 +5625,66 @@ async fn close_tab(webview: tauri::Webview, app: tauri::AppHandle, label: String
         pending_state.lock_recover().0.remove(&label);
     }
 
+    // Same reasoning, for any permission request(s) this tab took a
+    // WebView2 deferral for but never got answered (see
+    // PendingPermissionRequest's own doc comment) - closing the tab
+    // means there's no longer anyone who could ever answer them, and
+    // leaving the entries sitting in the map would leak the raw COM
+    // pointers they hold for the rest of the session. Resolves each as a
+    // denial (matching the frontend's own Escape/backdrop-dismiss
+    // behavior for an unanswered prompt) rather than just discarding the
+    // pointers outright, so WebView2's side of the request - and
+    // whatever getUserMedia()/Notification.requestPermission() promise
+    // the page itself is still waiting on - doesn't hang forever either;
+    // the tab's about to be destroyed anyway, so this is mostly about
+    // leaving WebView2's own bookkeeping in a clean state, not about
+    // anything the person will see.
+    //
+    // Dispatched via spawn_blocking, detached, rather than called
+    // directly: resolve_permission_prompt_windows does a blocking
+    // std::sync::mpsc::Receiver::recv() while it hops onto the WebView2
+    // UI thread via with_webview - safe for resolve_permission_prompt
+    // itself only because that command is deliberately NOT async fn, so
+    // Tauri runs it on its own blocking-command thread pool. close_tab IS
+    // async fn, so calling that blocking function directly here would
+    // block whatever tokio worker thread happens to be running this
+    // task - spawn_blocking moves it onto a proper blocking-pool thread
+    // instead, and this is fire-and-forget (not .await-ed) since
+    // close_tab has no reason to wait around for cleanup of a tab it's
+    // already committed to destroying.
+    #[cfg(windows)]
+    {
+        let ids_to_resolve: Vec<u64> = {
+            let state = app.state::<SharedPendingPermissionRequests>();
+            let st = state.lock_recover();
+            st.map
+                .iter()
+                .filter(|(_, req)| req.tab_label == label)
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        if !ids_to_resolve.is_empty() {
+            eprintln!(
+                "[kite] close_tab: resolving {} stranded permission request(s) for {label} as deny",
+                ids_to_resolve.len()
+            );
+            if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
+                let app_for_cleanup = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    for id in ids_to_resolve {
+                        let _ = resolve_permission_prompt_windows(
+                            chrome.clone(),
+                            app_for_cleanup.clone(),
+                            id,
+                            "deny".to_string(),
+                            false,
+                        );
+                    }
+                });
+            }
+        }
+    }
+
     let (was_active, remaining_empty, next_active, closed_the_library_tab) = {
         let state = app.state::<SharedTabState>();
         let mut st = state.lock_recover();
@@ -5504,7 +5867,7 @@ fn show_library(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), St
 #[tauri::command]
 fn hide_library(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
     require_chrome(&webview)?;
-    let (win_w, win_h, active) = {
+    let (win_w, win_h, active, other_open) = {
         let state = app.state::<SharedTabState>();
         let mut st = state.lock_recover();
         // A real close (the "Back to browsing" button, or Esc) - unlike
@@ -5512,23 +5875,32 @@ fn hide_library(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), St
         // pin, so returning to this tab later shows its own page again,
         // not the library.
         st.library_tab = None;
-        (st.window_size.0, st.window_size.1, st.active.clone())
+        // Don't shrink chrome (or unpark the active tab) out from under
+        // tab search or the permission prompt if either is still open -
+        // same guard hide_tab_search already has for the library, now
+        // symmetric. Whichever overlay is actually still showing is
+        // responsible for shrinking chrome back down itself, once it closes.
+        let other_open = st.tab_search_open || st.permission_prompt_open;
+        (st.window_size.0, st.window_size.1, st.active.clone(), other_open)
     };
-    if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
-        chrome
-            .set_size(LogicalSize::new(win_w, CHROME_HEIGHT))
-            .map_err(|e| e.to_string())?;
-    }
-    if let Some(active_webview) = app.get_webview(&active) {
-        active_webview
-            .set_position(visible_position())
-            .map_err(|e| e.to_string())?;
-        active_webview
-            .set_size(content_size(win_w, win_h))
-            .map_err(|e| e.to_string())?;
+    if !other_open {
+        if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
+            chrome
+                .set_size(LogicalSize::new(win_w, CHROME_HEIGHT))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(active_webview) = app.get_webview(&active) {
+            active_webview
+                .set_position(visible_position())
+                .map_err(|e| e.to_string())?;
+            active_webview
+                .set_size(content_size(win_w, win_h))
+                .map_err(|e| e.to_string())?;
+        }
     }
     // The address bar was showing a kite:// page while the library was
-    // open; put the active tab's real URL back now that it's visible again.
+    // open; put the active tab's real URL back now that it's visible again
+    // (or will be, once whatever else is holding chrome open finishes).
     emit_active_url(&app);
     Ok(())
 }
@@ -5569,17 +5941,84 @@ fn hide_tab_search(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(),
     let (win_w, win_h, active) = {
         let state = app.state::<SharedTabState>();
         let mut st = state.lock_recover();
-        // Don't clobber the library panel's own full-window takeover if
-        // that's what's actually open right now - only shrink chrome back
-        // down when tab search was the thing holding it open. This
-        // matters for the Ctrl+K-while-library-is-open path: the frontend
-        // already calls hide_library (not this) to close the library
-        // first in that case, but this guard keeps the two features from
-        // ever fighting over chrome's size if that ordering assumption
-        // ever breaks.
+        // Don't clobber the library panel's or permission prompt's own
+        // full-window takeover if either is actually open right now -
+        // only shrink chrome back down when tab search was the thing
+        // holding it open. This matters for the Ctrl+K-while-library-is-
+        // open path: the frontend already calls hide_library (not this)
+        // to close the library first in that case, but this guard keeps
+        // these features from ever fighting over chrome's size if that
+        // ordering assumption ever breaks.
         st.tab_search_open = false;
-        let lib_open = st.library_tab.as_deref() == Some(st.active.as_str());
-        (st.window_size.0, st.window_size.1, if lib_open { None } else { Some(st.active.clone()) })
+        let other_open = st.library_tab.as_deref() == Some(st.active.as_str())
+            || st.permission_prompt_open;
+        (st.window_size.0, st.window_size.1, if other_open { None } else { Some(st.active.clone()) })
+    };
+    if active.is_none() {
+        return Ok(());
+    }
+    let active = active.unwrap();
+    if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
+        chrome
+            .set_size(LogicalSize::new(win_w, CHROME_HEIGHT))
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(active_webview) = app.get_webview(&active) {
+        active_webview
+            .set_position(visible_position())
+            .map_err(|e| e.to_string())?;
+        active_webview
+            .set_size(content_size(win_w, win_h))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// Stage 2 of the custom permission-prompt work (see PendingPermissionRequest's
+// own doc comment further down this file for why this exists at all - in
+// short, WebView2's own permission bar can't be repositioned or restyled).
+// Same "chrome webview temporarily fills the whole window, active tab's
+// content webview parks off-screen underneath it" treatment as the library
+// panel and tab search above, for the same reason: the prompt is plain
+// HTML/CSS living inside chrome's own document, which normally only covers
+// the thin toolbar strip. Deliberately shaped just like show_tab_search/
+// hide_tab_search (plain bool, not pinned to any tab) rather than
+// show_library_impl/hide_library's per-tab pinning - a permission prompt
+// belongs to whichever request triggered it, not to "the tab that's
+// currently active," and the frontend's own queue (main.js) is what decides
+// when to call hide_permission_prompt (once nothing's left to show), not
+// tab-switching.
+#[tauri::command]
+fn show_permission_prompt(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let (win_w, win_h, active) = {
+        let state = app.state::<SharedTabState>();
+        let mut st = state.lock_recover();
+        st.permission_prompt_open = true;
+        (st.window_size.0, st.window_size.1, st.active.clone())
+    };
+    if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
+        chrome
+            .set_size(LogicalSize::new(win_w, win_h))
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(active_webview) = app.get_webview(&active) {
+        let _ = active_webview.set_position(hidden_position());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_permission_prompt(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let (win_w, win_h, active) = {
+        let state = app.state::<SharedTabState>();
+        let mut st = state.lock_recover();
+        // Same "don't clobber whichever other overlay is still open"
+        // guard as hide_library/hide_tab_search above.
+        st.permission_prompt_open = false;
+        let other_open = st.tab_search_open || st.library_tab.as_deref() == Some(st.active.as_str());
+        (st.window_size.0, st.window_size.1, if other_open { None } else { Some(st.active.clone()) })
     };
     if active.is_none() {
         return Ok(());
@@ -6351,6 +6790,7 @@ fn main() {
             library_tab: None,
             library_view: "history".to_string(),
             tab_search_open: false,
+            permission_prompt_open: false,
             closed_tabs: Vec::new(),
         }))
         .manage(Mutex::new(None::<ContextMenuTarget>) as SharedContextMenu)
@@ -6390,6 +6830,7 @@ fn main() {
             get_site_permissions,
             set_site_permission,
             remove_site_permissions,
+            resolve_permission_prompt,
             refresh_blocklist,
             choose_downloads_dir,
             sync_choose_folder,
@@ -6401,6 +6842,8 @@ fn main() {
             hide_library,
             show_tab_search,
             hide_tab_search,
+            show_permission_prompt,
+            hide_permission_prompt,
             toggle_find_in_page,
             report_context_menu,
             report_content_click,
@@ -6479,6 +6922,15 @@ fn main() {
                 file_path: passwords_path,
                 key: None,
             }) as SharedVaultState);
+
+            // Permission requests taken as a deferral by watch_for_
+            // permission_requests, awaiting a decision from the (future)
+            // custom prompt UI - see PendingPermissionRequest's own doc
+            // comment. Only meaningful on Windows (WebView2 deferrals),
+            // same reasoning as this file's other #[cfg(windows)]-gated
+            // pieces of state.
+            #[cfg(windows)]
+            app.manage(Mutex::new(PendingPermissionRequests::default()) as SharedPendingPermissionRequests);
 
             // Before any tab exists to possibly trigger a blocked-host
             // check, seed BLOCKLIST from a previously-refreshed on-disk
@@ -6588,15 +7040,16 @@ fn main() {
                     let (active_label, lib_open) = {
                         let mut st = state.lock_recover();
                         st.window_size = (logical.width, logical.height);
-                        // Tab search gets the same full-window chrome
-                        // treatment as the library panel for this sync -
-                        // both mean "the active tab's content webview is
-                        // parked and chrome covers the whole window right
-                        // now", so a live window resize needs to keep
-                        // chrome full-size (not shrink to CHROME_HEIGHT)
-                        // in either case.
+                        // Tab search and the permission prompt get the same
+                        // full-window chrome treatment as the library panel
+                        // for this sync - all three mean "the active tab's
+                        // content webview is parked and chrome covers the
+                        // whole window right now", so a live window resize
+                        // needs to keep chrome full-size (not shrink to
+                        // CHROME_HEIGHT) in any of those cases.
                         let lib_open = st.library_tab.as_deref() == Some(st.active.as_str())
-                            || st.tab_search_open;
+                            || st.tab_search_open
+                            || st.permission_prompt_open;
                         (st.active.clone(), lib_open)
                     };
 
