@@ -401,6 +401,33 @@
         <p class="tab-search-empty" id="tab-search-empty">No matching tabs.</p>
       </div>
     </div>
+
+    <!-- Custom permission prompt (Stage 2) - replaces WebView2's own native
+         permission bar, which can't be repositioned or restyled via any
+         public API (see PendingPermissionRequest's own doc comment in
+         main.rs). Same full-window chrome takeover as the tab search
+         overlay above and for the same reason: this is plain HTML/CSS
+         living inside the thin chrome strip, so it needs chrome resized to
+         the whole window to appear centered in it. Shows one request at a
+         time; if more come in while this is open they queue silently in
+         main.js and are shown as each one is answered. -->
+    <div class="permission-prompt-overlay" id="permission-prompt-overlay">
+      <div class="permission-prompt-box">
+        <img class="permission-prompt-icon" id="permission-prompt-icon" alt="" />
+        <p class="permission-prompt-text">
+          <span class="permission-prompt-host" id="permission-prompt-host"></span>
+          <span id="permission-prompt-kind-text"></span>
+        </p>
+        <label class="permission-prompt-remember">
+          <input type="checkbox" id="permission-prompt-remember-input" checked />
+          Remember this decision
+        </label>
+        <div class="permission-prompt-actions">
+          <button id="permission-prompt-block-btn" class="permission-prompt-btn permission-prompt-btn-secondary">Block</button>
+          <button id="permission-prompt-allow-btn" class="permission-prompt-btn permission-prompt-btn-primary">Allow</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="main.js"></script>
