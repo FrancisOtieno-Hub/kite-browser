@@ -598,6 +598,20 @@ struct Settings {
     // display-only (Settings UI), doesn't drive any logic itself.
     #[serde(default)]
     sync_last_pushed_at: Option<i64>,
+    // Vertical-tabs layout (see set_tab_bar_position). "top" is the
+    // original horizontal tab-bar-above-toolbar layout; "left" moves the
+    // tab strip into a resizable sidebar below the toolbar, alongside
+    // content. Read by the frontend (to pick a CSS layout class) and by
+    // the Rust-side layout math (content_offset/content_size and every
+    // resize/overlay path that positions the chrome and content
+    // webviews) - see TAB_BAR_HEIGHT_TOP/SIDEBAR_TOOLBAR_HEIGHT below.
+    #[serde(default = "default_tab_bar_position")]
+    tab_bar_position: String, // "top" | "left"
+    // Sidebar width in "left" mode, in logical pixels - user-adjustable
+    // by dragging its right edge (see set_sidebar_width). Unused (but
+    // still stored) while tab_bar_position is "top".
+    #[serde(default = "default_sidebar_width")]
+    sidebar_width: f64,
 }
 
 fn default_search_engine() -> String {
@@ -612,6 +626,21 @@ fn default_content_blocking_enabled() -> bool {
     true
 }
 
+fn default_tab_bar_position() -> String {
+    "top".to_string()
+}
+
+fn default_sidebar_width() -> f64 {
+    240.0
+}
+
+// Drag-resize is clamped server-side (not just in the frontend's own drag
+// handler) so a stale/hand-edited kite_data.json, or a future frontend
+// bug, can never wedge the sidebar down to something unusably thin or
+// wide enough to swallow the content area.
+const SIDEBAR_WIDTH_MIN: f64 = 180.0;
+const SIDEBAR_WIDTH_MAX: f64 = 400.0;
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -622,6 +651,8 @@ impl Default for Settings {
             content_blocking_enabled: default_content_blocking_enabled(),
             sync_folder: None,
             sync_last_pushed_at: None,
+            tab_bar_position: default_tab_bar_position(),
+            sidebar_width: default_sidebar_width(),
         }
     }
 }
@@ -2277,6 +2308,94 @@ fn set_content_blocking(webview: tauri::Webview, app: tauri::AppHandle, enabled:
     Ok(())
 }
 
+// Switches between the horizontal (tab bar above the toolbar) and
+// vertical (sidebar below the toolbar) tab layouts. Layout-only: doesn't
+// touch tabs, active, or anything else in TabState. The actual chrome/
+// content geometry recompute for the new layout is intentionally a
+// follow-up step, not part of this command - see the comment on
+// content_offset/content_size once that lands.
+#[tauri::command]
+fn set_tab_bar_position(webview: tauri::Webview, app: tauri::AppHandle, position: String) -> Result<(), String> {
+    require_chrome(&webview)?;
+    const VALID_POSITIONS: [&str; 2] = ["top", "left"];
+    if !VALID_POSITIONS.contains(&position.as_str()) {
+        return Err(format!("unknown tab bar position: {position}"));
+    }
+    {
+        let state = app.state::<SharedAppData>();
+        let mut st = state.lock_recover();
+        st.data.settings.tab_bar_position = position;
+    }
+    save_persisted_data(&app);
+    Ok(())
+}
+
+// Shared by set_sidebar_width and preview_sidebar_width: repositions and
+// resizes the active tab's content webview to match a (already-clamped)
+// sidebar width. A no-op outside "left" mode (nothing to reposition for)
+// and while Library/Tab Search/Permission Prompt own the content
+// webview's position (see restore_normal_layout for the mirror-image
+// case of handing it back) - dragging the sidebar while one of those is
+// open shouldn't fight with it.
+fn apply_sidebar_width_live(app: &tauri::AppHandle, clamped: f64) -> Result<(), String> {
+    let (position, _) = tab_bar_layout(app);
+    if position != "left" {
+        return Ok(());
+    }
+    let (win_w, win_h, active, overlay_open) = {
+        let state = app.state::<SharedTabState>();
+        let st = state.lock_recover();
+        let overlay_open = st.library_tab.as_deref() == Some(st.active.as_str())
+            || st.tab_search_open
+            || st.permission_prompt_open;
+        (st.window_size.0, st.window_size.1, st.active.clone(), overlay_open)
+    };
+    if overlay_open {
+        return Ok(());
+    }
+    if let Some(active_webview) = app.get_webview(&active) {
+        active_webview
+            .set_position(visible_position(&position, clamped))
+            .map_err(|e| e.to_string())?;
+        active_webview
+            .set_size(content_size(win_w, win_h, &position, clamped))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// Persists the sidebar's width after a drag-resize in "left" mode.
+// Clamped to [SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX] rather than rejected
+// outright - the frontend's own drag handler should already keep the
+// live value in range, but silently clamping here means a stray
+// out-of-range value (e.g. from a future frontend bug) degrades to "use
+// the nearest valid width" instead of leaving the setting unsaved.
+#[tauri::command]
+fn set_sidebar_width(webview: tauri::Webview, app: tauri::AppHandle, width: f64) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let clamped = width.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+    {
+        let state = app.state::<SharedAppData>();
+        let mut st = state.lock_recover();
+        st.data.settings.sidebar_width = clamped;
+    }
+    save_persisted_data(&app);
+    apply_sidebar_width_live(&app, clamped)
+}
+
+// Live-drag counterpart to set_sidebar_width above: repositions the
+// content webview to match a width the frontend is still dragging,
+// without writing to disk on every mousemove event. The frontend calls
+// this repeatedly (throttled to once per animation frame - see the
+// sidebar-resize-handle listener in main.js) while dragging, then calls
+// set_sidebar_width exactly once on mouseup to make the final value
+// stick and persist.
+#[tauri::command]
+fn preview_sidebar_width(webview: tauri::Webview, app: tauri::AppHandle, width: f64) -> Result<(), String> {
+    require_chrome(&webview)?;
+    apply_sidebar_width_live(&app, width.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX))
+}
+
 // Toggles content blocking for whichever host the active tab is
 // currently on - the shield badge's click handler. Unlike
 // set_content_blocking (global on/off), this needs to know which site,
@@ -3130,16 +3249,87 @@ fn sync_now(webview: tauri::Webview, app: tauri::AppHandle) -> Result<i64, Strin
 
 // --- Tabs (unchanged behaviour, plus history hooks below) ---
 
-fn visible_position() -> LogicalPosition<f64> {
-    LogicalPosition::new(0.0, CHROME_HEIGHT)
+// Vertical tabs ("left" mode) moves the tab strip out of its own top row
+// and into a resizable sidebar below the toolbar+bookmarks-bar band - see
+// Settings::tab_bar_position/sidebar_width. TOOLBAR_AREA_HEIGHT is that
+// band's height with the tab-bar row subtracted back out, so it inherits
+// whatever slack CHROME_HEIGHT already carries (40+54+36=130 on paper,
+// but CHROME_HEIGHT is 124 - a pre-existing fudge factor from before this
+// feature, deliberately not "corrected" here) rather than introducing a
+// second, independently-tuned constant that could drift from the first.
+const TAB_BAR_ROW_HEIGHT: f64 = 40.0; // .tab-bar's own height in styles.css
+const TOOLBAR_AREA_HEIGHT: f64 = CHROME_HEIGHT - TAB_BAR_ROW_HEIGHT;
+
+// Reads the two vertical-tabs settings together, since every call site
+// that needs one needs the other. Takes an AppHandle specifically (not a
+// generic Manager) because every call site already has one in scope, or
+// (in setup()) can cheaply get one via app.handle() - see its own use
+// there.
+fn tab_bar_layout(app: &tauri::AppHandle) -> (String, f64) {
+    let state = app.state::<SharedAppData>();
+    let st = state.lock_recover();
+    (st.data.settings.tab_bar_position.clone(), st.data.settings.sidebar_width)
+}
+
+// The chrome webview's size in the ordinary (no overlay open) state.
+// "left" mode keeps chrome full-window-sized even here - same trick the
+// Library/Tab Search/Permission Prompt overlays already use to draw over
+// the whole window, just permanent instead of temporary in this mode -
+// so the sidebar (plain HTML living inside chrome's own document) has
+// somewhere to actually render. The content webview (a separate child,
+// positioned below via visible_position/content_size) sits on top of the
+// part of that rectangle it doesn't need, exactly like an overlay's
+// parked tab sits *underneath* chrome once parked off-screen.
+fn chrome_normal_size(win_w: f64, win_h: f64, position: &str) -> LogicalSize<f64> {
+    if position == "left" {
+        LogicalSize::new(win_w, win_h)
+    } else {
+        LogicalSize::new(win_w, CHROME_HEIGHT)
+    }
+}
+
+fn visible_position(position: &str, sidebar_width: f64) -> LogicalPosition<f64> {
+    if position == "left" {
+        LogicalPosition::new(sidebar_width, TOOLBAR_AREA_HEIGHT)
+    } else {
+        LogicalPosition::new(0.0, CHROME_HEIGHT)
+    }
 }
 
 fn hidden_position() -> LogicalPosition<f64> {
     LogicalPosition::new(OFFSCREEN_X, CHROME_HEIGHT)
 }
 
-fn content_size(win_w: f64, win_h: f64) -> LogicalSize<f64> {
-    LogicalSize::new(win_w, (win_h - CHROME_HEIGHT).max(0.0))
+fn content_size(win_w: f64, win_h: f64, position: &str, sidebar_width: f64) -> LogicalSize<f64> {
+    if position == "left" {
+        LogicalSize::new((win_w - sidebar_width).max(0.0), (win_h - TOOLBAR_AREA_HEIGHT).max(0.0))
+    } else {
+        LogicalSize::new(win_w, (win_h - CHROME_HEIGHT).max(0.0))
+    }
+}
+
+// Shared by hide_library/hide_tab_search/hide_permission_prompt: shrink
+// chrome back down from its full-window overlay size and un-park the
+// active tab's content webview, both mode-aware. Pulled out once here
+// rather than left duplicated three times, since all three do exactly
+// this and only this once their own "is some other overlay still open"
+// guard clears.
+fn restore_normal_layout(app: &tauri::AppHandle, win_w: f64, win_h: f64, active: &str) -> Result<(), String> {
+    let (position, sidebar_width) = tab_bar_layout(app);
+    if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
+        chrome
+            .set_size(chrome_normal_size(win_w, win_h, &position))
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(active_webview) = app.get_webview(active) {
+        active_webview
+            .set_position(visible_position(&position, sidebar_width))
+            .map_err(|e| e.to_string())?;
+        active_webview
+            .set_size(content_size(win_w, win_h, &position, sidebar_width))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn search_url_for(engine: &str, query: &str) -> String {
@@ -3664,7 +3854,10 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
                     true
                 }),
             hidden_position(),
-            content_size(win_w, win_h),
+            {
+                let (position, sidebar_width) = tab_bar_layout(app);
+                content_size(win_w, win_h, &position, sidebar_width)
+            },
         )
         .map_err(|e| format!("add_child failed for {url_for_error}: {e}"))?;
 
@@ -3731,6 +3924,7 @@ fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
     // place that can't be missed.
     let is_library_tab = library_tab.as_deref() == Some(label);
     let was_library_tab = library_tab.as_deref() == Some(prev_active.as_str());
+    let (position, sidebar_width) = tab_bar_layout(app);
 
     if is_library_tab {
         // Switching back to the tab the panel is pinned to - re-expand
@@ -3761,7 +3955,7 @@ fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
         // shrinks it back down once it actually closes.
         if !tab_search_open && !permission_prompt_open {
             if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
-                let _ = chrome.set_size(LogicalSize::new(win_w, CHROME_HEIGHT));
+                let _ = chrome.set_size(chrome_normal_size(win_w, win_h, &position));
             }
         }
     }
@@ -3786,10 +3980,10 @@ fn activate_tab(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
     if !is_library_tab && !tab_search_open && !permission_prompt_open {
         if let Some(webview) = app.get_webview(label) {
             webview
-                .set_position(visible_position())
+                .set_position(visible_position(&position, sidebar_width))
                 .map_err(|e| e.to_string())?;
             webview
-                .set_size(content_size(win_w, win_h))
+                .set_size(content_size(win_w, win_h, &position, sidebar_width))
                 .map_err(|e| e.to_string())?;
             // Positioning/resizing only makes it visible - it doesn't transfer
             // OS keyboard focus, which otherwise stays wherever it was before
@@ -5884,19 +6078,7 @@ fn hide_library(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), St
         (st.window_size.0, st.window_size.1, st.active.clone(), other_open)
     };
     if !other_open {
-        if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
-            chrome
-                .set_size(LogicalSize::new(win_w, CHROME_HEIGHT))
-                .map_err(|e| e.to_string())?;
-        }
-        if let Some(active_webview) = app.get_webview(&active) {
-            active_webview
-                .set_position(visible_position())
-                .map_err(|e| e.to_string())?;
-            active_webview
-                .set_size(content_size(win_w, win_h))
-                .map_err(|e| e.to_string())?;
-        }
+        restore_normal_layout(&app, win_w, win_h, &active)?;
     }
     // The address bar was showing a kite:// page while the library was
     // open; put the active tab's real URL back now that it's visible again
@@ -5958,19 +6140,7 @@ fn hide_tab_search(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(),
         return Ok(());
     }
     let active = active.unwrap();
-    if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
-        chrome
-            .set_size(LogicalSize::new(win_w, CHROME_HEIGHT))
-            .map_err(|e| e.to_string())?;
-    }
-    if let Some(active_webview) = app.get_webview(&active) {
-        active_webview
-            .set_position(visible_position())
-            .map_err(|e| e.to_string())?;
-        active_webview
-            .set_size(content_size(win_w, win_h))
-            .map_err(|e| e.to_string())?;
-    }
+    restore_normal_layout(&app, win_w, win_h, &active)?;
     Ok(())
 }
 
@@ -6024,19 +6194,7 @@ fn hide_permission_prompt(webview: tauri::Webview, app: tauri::AppHandle) -> Res
         return Ok(());
     }
     let active = active.unwrap();
-    if let Some(chrome) = app.get_webview(MAIN_WEBVIEW_LABEL) {
-        chrome
-            .set_size(LogicalSize::new(win_w, CHROME_HEIGHT))
-            .map_err(|e| e.to_string())?;
-    }
-    if let Some(active_webview) = app.get_webview(&active) {
-        active_webview
-            .set_position(visible_position())
-            .map_err(|e| e.to_string())?;
-        active_webview
-            .set_size(content_size(win_w, win_h))
-            .map_err(|e| e.to_string())?;
-    }
+    restore_normal_layout(&app, win_w, win_h, &active)?;
     Ok(())
 }
 
@@ -6157,10 +6315,15 @@ fn report_context_menu(
     let window = app.get_window("main").ok_or("main window missing")?;
     // x/y are relative to the content webview's own viewport; popup_menu_at
     // wants window-relative coordinates, so add the content webview's
-    // fixed offset (it always sits at visible_position() while active).
-    let position = Position::Logical(LogicalPosition::new(x, y + CHROME_HEIGHT));
+    // fixed offset (it always sits at visible_position() while active) -
+    // both x and y now, since "left" mode's offset isn't purely vertical
+    // the way "top" mode's is.
+    let (tab_bar_position, sidebar_width) = tab_bar_layout(&app);
+    let content_offset = visible_position(&tab_bar_position, sidebar_width);
+    let popup_position =
+        Position::Logical(LogicalPosition::new(x + content_offset.x, y + content_offset.y));
     window
-        .popup_menu_at(&menu, position)
+        .popup_menu_at(&menu, popup_position)
         .map_err(|e| e.to_string())
 }
 
@@ -6826,6 +6989,9 @@ fn main() {
             set_search_engine,
             set_homepage,
             set_content_blocking,
+            set_tab_bar_position,
+            set_sidebar_width,
+            preview_sidebar_width,
             toggle_site_allowlist,
             get_site_permissions,
             set_site_permission,
@@ -6983,10 +7149,11 @@ fn main() {
                 }
             }
 
+            let (initial_tab_bar_position, _initial_sidebar_width) = tab_bar_layout(&app.handle());
             window.add_child(
                 WebviewBuilder::new(MAIN_WEBVIEW_LABEL, WebviewUrl::App("index.html".into())),
                 LogicalPosition::new(0.0, 0.0),
-                LogicalSize::new(width, CHROME_HEIGHT),
+                chrome_normal_size(width, height, &initial_tab_bar_position),
             )?;
 
             // Dispatches whichever item the user picked from the context
@@ -7053,14 +7220,25 @@ fn main() {
                         (st.active.clone(), lib_open)
                     };
 
+                    let (position, sidebar_width) = tab_bar_layout(&app_handle_resize);
+
                     if let Some(chrome) = app_handle_resize.get_webview(MAIN_WEBVIEW_LABEL) {
-                        let chrome_height = if lib_open { logical.height } else { CHROME_HEIGHT };
-                        let _ = chrome.set_size(LogicalSize::new(logical.width, chrome_height));
+                        let chrome_size = if lib_open {
+                            LogicalSize::new(logical.width, logical.height)
+                        } else {
+                            chrome_normal_size(logical.width, logical.height, &position)
+                        };
+                        let _ = chrome.set_size(chrome_size);
                     }
 
                     if !lib_open {
                         if let Some(active) = app_handle_resize.get_webview(&active_label) {
-                            let _ = active.set_size(content_size(logical.width, logical.height));
+                            let _ = active.set_size(content_size(
+                                logical.width,
+                                logical.height,
+                                &position,
+                                sidebar_width,
+                            ));
                         }
                     }
                 }
