@@ -215,6 +215,136 @@ html, body {
   color: var(--text);
 }
 
+/* --- Vertical tabs (sidebar layout) ---
+   Toggled by adding .vertical-tabs to .chrome (see applyTabBarPosition in
+   main.js), driven by Settings > Tab bar position (tab_bar_position,
+   "top" | "left" - see set_tab_bar_position/tab_bar_layout in main.rs).
+   Every rule above this point is the original "top" layout, applied
+   unconditionally - .chrome without this class looks and behaves exactly
+   as before.
+
+   --kite-sidebar-width is set on <html> by that same JS, from the same
+   sidebar_width setting Rust uses to offset the content webview
+   (content_size/visible_position in main.rs) - the grid column below and
+   that offset must always agree, since the content webview is a separate
+   native child window drawn on top of whatever this grid leaves empty in
+   the "content" area, not something this stylesheet draws itself. */
+.chrome.vertical-tabs {
+  display: grid;
+  grid-template-columns: var(--kite-sidebar-width, 240px) 1fr;
+  grid-template-rows: auto auto 1fr;
+  grid-template-areas:
+    "toolbar toolbar"
+    "bookmarks bookmarks"
+    "sidebar content";
+}
+
+.chrome.vertical-tabs .toolbar {
+  grid-area: toolbar;
+}
+
+.chrome.vertical-tabs .bookmarks-bar {
+  grid-area: bookmarks;
+}
+
+/* The "content" grid area is deliberately empty in the markup - it's
+   where the active tab's own content webview shows through, not
+   something this stylesheet renders. */
+
+.chrome.vertical-tabs .tab-bar {
+  grid-area: sidebar;
+  flex-direction: column;
+  align-items: stretch;
+  height: auto;
+  min-height: 0;
+  padding: 8px 6px;
+  gap: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-right: 1px solid var(--toolbar-border);
+}
+
+.chrome.vertical-tabs .tab {
+  max-width: none;
+  min-width: 0;
+  width: 100%;
+  height: 34px;
+  border-radius: 8px;
+  padding: 0 8px 0 10px;
+}
+
+/* Echoes .tab.active's top-mode amber tether (::before, a thin bar above
+   the tab) as a thin bar down the left edge instead - "above" doesn't
+   read as "currently open" once tabs stack vertically, but a side rail
+   still does. */
+.chrome.vertical-tabs .tab.active::before {
+  top: 4px;
+  bottom: 4px;
+  left: -1px;
+  right: auto;
+  width: 2px;
+  height: auto;
+  border-radius: 2px;
+}
+
+.chrome.vertical-tabs .tab.private.active::before {
+  background: var(--private-accent);
+}
+
+.chrome.vertical-tabs .new-tab-btn {
+  order: -1;
+  align-self: stretch;
+  width: auto;
+  height: 32px;
+  border-radius: 8px;
+  margin: 0 0 4px;
+}
+
+/* Deliberately does NOT span the sidebar column. Top mode never covers
+   its own tab bar with the Library panel either (the tab-bar row sits
+   above .library in the flex column, so it stays visible regardless of
+   .library.open) - the sidebar plays the identical "list of open tabs"
+   role, just relocated, so it gets the same treatment here: Library
+   only ever takes over the "content" cell, the same place the active
+   tab's own content webview would otherwise show through. */
+.chrome.vertical-tabs .library {
+  grid-area: content;
+}
+
+/* Hidden entirely outside vertical-tabs mode - since it's an
+   unconditional sibling of .tab-bar in the markup, without this it
+   would otherwise sit as a real (if invisible) flex item between the
+   tab-bar and toolbar rows in top mode. */
+.sidebar-resize-handle {
+  display: none;
+}
+
+.chrome.vertical-tabs .sidebar-resize-handle {
+  display: block;
+  grid-area: sidebar;
+  justify-self: end;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.chrome.vertical-tabs .sidebar-resize-handle:hover,
+.chrome.vertical-tabs .sidebar-resize-handle.dragging {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+/* Applied to <body> for the duration of a drag (see main.js) - keeps the
+   resize cursor showing even when the pointer briefly slides off the
+   thin 6px handle mid-drag, and stops the drag from selecting page text
+   as the mouse moves. */
+body.sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 /* --- Toolbar --- */
 
 .toolbar {
