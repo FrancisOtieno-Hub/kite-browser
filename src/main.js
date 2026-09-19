@@ -6,6 +6,7 @@ console.log("[kite] main.js loaded, __TAURI__ present:", !!window.__TAURI__);
 const chromeEl = document.querySelector(".chrome");
 const tabBar = document.getElementById("tab-bar");
 const newTabBtn = document.getElementById("new-tab-btn");
+const sidebarResizeHandle = document.getElementById("sidebar-resize-handle");
 const addressForm = document.getElementById("address-form");
 const addressInput = document.getElementById("address-input");
 const backBtn = document.getElementById("back-btn");
@@ -102,6 +103,7 @@ const vaultAddressCancelBtn = document.getElementById("vault-address-cancel-btn"
 const vaultAddressesList = document.getElementById("vault-addresses-list");
 const vaultAddressesEmpty = document.getElementById("vault-addresses-empty");
 const settingsSearchEngine = document.getElementById("settings-search-engine");
+const settingsTabBarPositionRadios = document.querySelectorAll('input[name="settings-tab-bar-position"]');
 const settingsHomepageRadios = document.querySelectorAll('input[name="settings-homepage-mode"]');
 const settingsHomepageUrl = document.getElementById("settings-homepage-url");
 const settingsDownloadsPath = document.getElementById("settings-downloads-path");
@@ -143,6 +145,109 @@ let pendingAutofillPrompts = {};
 // real URL regardless of what's displayed.
 let activeUrl = "";
 let bookmarkedUrls = new Set();
+// Mirrors Settings.sidebar_width (main.rs) - kept up to date by
+// applyTabBarPosition below so the "left" mode radio's change handler has
+// a width to hand back to Rust without needing a fresh get_settings
+// round trip just to read a value that's already been fetched once.
+let currentSidebarWidth = 240;
+
+// Toggles between the original top tab-bar and the vertical sidebar
+// layout, and keeps the CSS grid's sidebar column in exact agreement
+// with the width main.rs is using to offset the content webview (see
+// content_size/visible_position there) - the grid column and that
+// native offset are two independent things that both have to reach the
+// same number, since the content webview is a separate child window,
+// not something this stylesheet can size directly. Called once on
+// startup (see the initial get_settings priming below - Rust has
+// already sized chrome/content for whichever position was persisted
+// before this page even loaded, so the DOM needs to match immediately,
+// not wait for Settings to be opened) and again whenever Settings changes
+// it.
+function applyTabBarPosition(position, sidebarWidth) {
+  currentSidebarWidth = sidebarWidth;
+  chromeEl.classList.toggle("vertical-tabs", position === "left");
+  document.documentElement.style.setProperty("--kite-sidebar-width", `${sidebarWidth}px`);
+}
+
+// --- Sidebar resize (vertical-tabs mode) ---
+//
+// Mirrors SIDEBAR_WIDTH_MIN/MAX in main.rs - kept in sync by hand, same
+// as normalizeUrl/searchUrlFor in home.js mirror their own Rust-side
+// counterparts, since the frontend has no way to ask Rust for these two
+// numbers without a round trip on every drag frame. Clamping here is
+// purely for a good live-drag *feel* (no point asking Rust to reposition
+// past a point it'll just re-clamp back anyway) - Rust re-clamps again on
+// both preview_sidebar_width and set_sidebar_width regardless, so any
+// drift between these two copies could only make the drag feel slightly
+// off, never actually desync the persisted value.
+const SIDEBAR_WIDTH_MIN = 180;
+const SIDEBAR_WIDTH_MAX = 400;
+
+let sidebarDragStartX = 0;
+let sidebarDragStartWidth = 0;
+let sidebarDragPending = false; // a preview_sidebar_width call is queued for the next animation frame
+let sidebarDragLatestWidth = null; // most recent width computed during the drag, sent on that next frame
+
+function setSidebarWidthLive(width) {
+  currentSidebarWidth = width;
+  document.documentElement.style.setProperty("--kite-sidebar-width", `${width}px`);
+}
+
+// Actually calling preview_sidebar_width on every mousemove would flood
+// the IPC bridge with far more calls than the eye can even perceive -
+// this throttles the *backend* round trip to once per animation frame
+// while the CSS var above still updates every single mousemove, so the
+// sidebar itself never feels laggy even though the real content webview
+// (a separate native window Rust has to reposition) only catches up once
+// per frame.
+function flushSidebarDragPreview() {
+  sidebarDragPending = false;
+  if (sidebarDragLatestWidth == null) return;
+  const width = sidebarDragLatestWidth;
+  sidebarDragLatestWidth = null;
+  invoke("preview_sidebar_width", { width }).catch((err) =>
+    console.error("[kite] preview_sidebar_width failed:", err)
+  );
+}
+
+function onSidebarDragMove(e) {
+  const width = Math.min(
+    SIDEBAR_WIDTH_MAX,
+    Math.max(SIDEBAR_WIDTH_MIN, sidebarDragStartWidth + (e.clientX - sidebarDragStartX))
+  );
+  setSidebarWidthLive(width);
+  sidebarDragLatestWidth = width;
+  if (!sidebarDragPending) {
+    sidebarDragPending = true;
+    requestAnimationFrame(flushSidebarDragPreview);
+  }
+}
+
+function onSidebarDragEnd() {
+  document.removeEventListener("mousemove", onSidebarDragMove);
+  document.removeEventListener("mouseup", onSidebarDragEnd);
+  document.body.classList.remove("sidebar-resizing");
+  sidebarResizeHandle.classList.remove("dragging");
+  invoke("set_sidebar_width", { width: currentSidebarWidth }).catch((err) => {
+    console.error("[kite] set_sidebar_width failed:", err);
+    // Revert to whatever's actually persisted, since the final value
+    // didn't take - same re-fetch-on-failure pattern the rest of
+    // Settings already uses.
+    invoke("get_settings")
+      .then((settings) => applyTabBarPosition(settings.tab_bar_position, settings.sidebar_width))
+      .catch((err2) => console.error("[kite] get_settings (after failed drag) failed:", err2));
+  });
+}
+
+sidebarResizeHandle.addEventListener("mousedown", (e) => {
+  e.preventDefault(); // don't let the drag start a text selection
+  sidebarDragStartX = e.clientX;
+  sidebarDragStartWidth = currentSidebarWidth;
+  sidebarResizeHandle.classList.add("dragging");
+  document.body.classList.add("sidebar-resizing");
+  document.addEventListener("mousemove", onSidebarDragMove);
+  document.addEventListener("mouseup", onSidebarDragEnd);
+});
 
 const DEFAULT_FAVICON =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7690' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cline x1='3' y1='12' x2='21' y2='12'/%3E%3Cpath d='M12 3a14.5 14.5 0 0 1 0 18a14.5 14.5 0 0 1 0-18'/%3E%3C/svg%3E";
@@ -1035,6 +1140,10 @@ function loadSettings() {
   invoke("get_settings")
     .then((settings) => {
       settingsSearchEngine.value = settings.search_engine;
+      settingsTabBarPositionRadios.forEach((radio) => {
+        radio.checked = radio.value === settings.tab_bar_position;
+      });
+      applyTabBarPosition(settings.tab_bar_position, settings.sidebar_width);
       settingsHomepageRadios.forEach((radio) => {
         radio.checked = radio.value === settings.homepage_mode;
       });
@@ -1243,6 +1352,23 @@ settingsSearchEngine.addEventListener("change", () => {
     // Revert the dropdown to whatever's actually persisted, since the
     // change didn't take.
     loadSettings();
+  });
+});
+
+settingsTabBarPositionRadios.forEach((radio) => {
+  radio.addEventListener("change", () => {
+    const value = radio.value;
+    invoke("set_tab_bar_position", { position: value })
+      .then(() => {
+        // Apply immediately rather than waiting for a future
+        // loadSettings() call - same "reflect what we just set, don't
+        // wait for a re-fetch" pattern as the rest of this file.
+        applyTabBarPosition(value, currentSidebarWidth);
+      })
+      .catch((err) => {
+        console.error("[kite] set_tab_bar_position failed:", err);
+        loadSettings();
+      });
   });
 });
 
@@ -2418,6 +2544,15 @@ invoke("get_tabs")
     updateStarState();
   })
   .catch((err) => console.error("[kite] get_tabs failed:", err));
+
+// Prime the vertical-tabs layout on load too, same reasoning as get_tabs
+// just above - main.rs already sized chrome/content for whichever
+// tab_bar_position was persisted (see tab_bar_layout in main.rs) before
+// this page ever loaded, so the DOM needs to match that immediately
+// rather than waiting for the Settings view to be opened.
+invoke("get_settings")
+  .then((settings) => applyTabBarPosition(settings.tab_bar_position, settings.sidebar_width))
+  .catch((err) => console.error("[kite] get_settings (initial) failed:", err));
 
 // Prime the star button state on load.
 refreshBookmarkedUrls();
