@@ -19,6 +19,14 @@
       </button>
     </div>
 
+    <!-- Only shown/usable in vertical-tabs mode (see .vertical-tabs
+         .sidebar-resize-handle in styles.css) - a direct sibling of
+         .tab-bar rather than nested inside it so it can sit in the same
+         "sidebar" grid cell (see styles.css) pinned to its right edge via
+         justify-self: end, independent of whatever .tab-bar's own
+         internal flex layout is doing. Drag logic lives in main.js. -->
+    <div class="sidebar-resize-handle" id="sidebar-resize-handle" title="Drag to resize"></div>
+
     <div class="toolbar">
       <button id="back-btn" class="nav-btn" title="Back (Alt+Left)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
@@ -275,6 +283,21 @@
               <option value="bing">Bing</option>
               <option value="duckduckgo">DuckDuckGo</option>
             </select>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section-title">Tab bar position</h3>
+            <p class="settings-section-desc">Where open tabs are shown.</p>
+            <div class="settings-radio-group">
+              <label class="settings-radio">
+                <input type="radio" name="settings-tab-bar-position" value="top" checked />
+                Top, above the toolbar
+              </label>
+              <label class="settings-radio">
+                <input type="radio" name="settings-tab-bar-position" value="left" />
+                Left sidebar
+              </label>
+            </div>
           </section>
 
           <section class="settings-section">
