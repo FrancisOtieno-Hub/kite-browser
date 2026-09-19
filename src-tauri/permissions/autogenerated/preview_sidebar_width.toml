@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT
+"$schema" = "../../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-preview-sidebar-width"
+description = "Enables the preview_sidebar_width command without any pre-configured scope."
+commands.allow = ["preview_sidebar_width"]
+
+[[permission]]
+identifier = "deny-preview-sidebar-width"
+description = "Denies the preview_sidebar_width command without any pre-configured scope."
+commands.deny = ["preview_sidebar_width"]
