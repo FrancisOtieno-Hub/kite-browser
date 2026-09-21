@@ -287,6 +287,24 @@ h1 .accent { color: var(--amber-dim); }
   grid-column: 1 / -1;
 }
 
+.feature-card--tabs {
+  grid-column: span 2;
+}
+
+@media (max-width: 900px) {
+  .feature-card--tabs { grid-column: span 1; }
+}
+
+.feature-card kbd {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--amber-glow);
+  border: 1px solid rgba(232, 163, 61, 0.4);
+  border-radius: var(--radius);
+  padding: 1px 5px;
+}
+
 /* ---------- Download ---------- */
 
 .download {
