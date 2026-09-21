@@ -11,19 +11,24 @@ Built with [Tauri v2](https://tauri.app) (Rust backend + HTML/CSS/JS chrome), re
 ## Features
 
 - **Tabs** — create, switch, close, back/forward/reload, session restore
+- **Vertical tabs** — move the tab list into a resizable sidebar instead of the top bar, toggled from Settings, with a drag handle to resize it
+- **Tab search** (Ctrl+K) — a command-palette-style overlay for jumping straight to any open tab by title or URL
+- **Tab suspension** — idle background tabs are put to sleep to free up memory, and wake automatically the moment you switch back
 - **History & bookmarks** — JSON-persisted, with a library panel UI
 - **Homepage** (`kite://home`) — search bar, photo background, persistent bookmarks bar
 - **Content blocking** — a 97,000+ domain blocklist, refreshable, with per-site allow toggle
 - **Extensions** (`kite://settings` → Extensions) — seven built-in, opt-in extensions: Dark Mode, Cosmetic Ad Blocking, SponsorBlock, YouTube Video Ad Blocking, Volume Booster (up to 500%, per-origin), Reader Mode, and Vimium-style Keyboard Navigation. Nothing runs until you enable it.
-- **Password vault** — Argon2id + AES-GCM encrypted, one master password, save & autofill, no third-party extension needed
+- **Password vault** — Argon2id + AES-GCM encrypted, one master password, save & autofill for logins, addresses, and payment cards, no third-party extension needed
+- **Own-cloud sync** — encrypts bookmarks, history, and settings with your vault's master password and syncs them through a folder your own cloud provider (Dropbox, Drive, OneDrive, Nextcloud, etc.) already keeps in sync — no Kite-run server involved
+- **Per-site permission memory** — camera, microphone, location, and notification decisions are remembered per site, so you're not asked twice
 - **Genuine private tabs** — real cookie/cache isolation via the OS's own incognito profile, not just a UI label
 - **Find-in-page & zoom** — Ctrl+F, Ctrl+/-/0, tracked per tab
 - **Context menu** — links, images, selection, with native image actions (Open in New Tab, Save As, Copy, Copy Address)
 - **Downloads** — intercepted into your OS Downloads folder, collision-avoided naming, library panel UI
-- **Settings** (`kite://settings`) — search engine, homepage/startup behavior, downloads location, clear browsing data
+- **Settings** (`kite://settings`) — search engine, tab bar position, homepage/startup behavior, downloads location, clear browsing data
 - **Crash recovery** — a tab whose content crashes shows a recovery page instead of going dead (Windows, via WebView2's `ProcessFailed` event)
 - **Favicons** — detected, fetched, cached, and persisted so they survive restarts
-- **Keyboard shortcuts** — Ctrl+T/W/Shift+T (reopen closed tab), Ctrl+L/D/H/F, Ctrl+1–9, Ctrl+Tab cycling, zoom shortcuts
+- **Keyboard shortcuts** — Ctrl+T/W/Shift+T (reopen closed tab), Ctrl+K (tab search), Ctrl+L/D/H/F, Ctrl+1–9, Ctrl+Tab cycling, zoom shortcuts
 
 ## Platform support
 
@@ -57,6 +62,12 @@ npm run tauri build
 - Cross-platform support (macOS/Linux) — scoping is done; implementation is blocked on access to non-Windows hardware
 - Chrome/Firefox extension import
 - Free Download Manager integration
+- Built-in translation
+- Fingerprinting resistance toggle
+- Picture-in-picture as a toolbar button
+- Reader Mode export
+- Blocklist diffing
+- Crash reporting — opt-in only, local-first
 
 ## Contributing
 
