@@ -52,7 +52,7 @@
 <div class="facts">
   <div class="facts-inner">
     <div class="fact"><strong>Native engine</strong>Runs on your OS's own WebView, not a bundled copy of Chromium.</div>
-    <div class="fact"><strong>Encrypted vault</strong>Passwords locked with Argon2id + AES-GCM, unlocked only by you.</div>
+    <div class="fact"><strong>Encrypted vault</strong>Logins, addresses and cards locked with Argon2id + AES-GCM, unlocked only by you.</div>
     <div class="fact"><strong>Real private tabs</strong>Genuine cookie and cache isolation — not just a darker toolbar.</div>
     <div class="fact"><strong>Built-in blocking</strong>A 97,000+ domain blocklist, refreshable, with per-site control.</div>
   </div>
@@ -73,7 +73,7 @@
     <div class="feature-card">
       <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="1.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4" stroke-linecap="round"/></svg>
       <h3>Password vault</h3>
-      <p>One master password unlocks everything else. Save, autofill, and manage logins without a third-party extension.</p>
+      <p>One master password unlocks everything else. Save, autofill and manage logins, addresses and payment cards without a third-party extension.</p>
     </div>
     <div class="feature-card feature-card--private">
       <svg viewBox="0 0 24 24" style="stroke: var(--indigo);"><path d="M3 12s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7z" stroke-linecap="round" stroke-linejoin="round"/><line x1="4" y1="20" x2="20" y2="4" stroke-linecap="round"/></svg>
@@ -83,17 +83,27 @@
     <div class="feature-card">
       <svg viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" stroke-linejoin="round"/></svg>
       <h3>Fast &amp; light</h3>
-      <p>No second browser engine shipped inside the app — Kite stays out of your RAM's way.</p>
+      <p>No second browser engine shipped inside the app, and idle background tabs sleep until you come back to them. Kite stays out of your RAM's way.</p>
+    </div>
+    <div class="feature-card">
+      <svg viewBox="0 0 24 24"><path d="M4 9.5A7.5 7.5 0 0 1 17 5l2.5 2.5M19.5 3.5v4h-4" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 14.5A7.5 7.5 0 0 1 7 19l-2.5-2.5M4.5 20.5v-4h4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <h3>Sync you host yourself</h3>
+      <p>Bookmarks, history and settings are encrypted with your master password and synced through a folder Dropbox, Drive, OneDrive or Nextcloud already keeps in step. No Kite server in the middle.</p>
+    </div>
+    <div class="feature-card">
+      <svg viewBox="0 0 24 24"><line x1="4" y1="8.5" x2="20" y2="8.5" stroke-linecap="round"/><circle cx="15" cy="8.5" r="2.6"/><line x1="4" y1="16" x2="20" y2="16" stroke-linecap="round"/><circle cx="9" cy="16" r="2.6"/></svg>
+      <h3>Permissions, per site</h3>
+      <p>Camera, microphone, location and notification answers are kept for the site you gave them to, so you're asked once and not again.</p>
+    </div>
+    <div class="feature-card feature-card--tabs">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1.5"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="7" y1="6.5" x2="7" y2="6.5" stroke-linecap="round" stroke-width="2.4"/></svg>
+      <h3>Tabs, where you want them</h3>
+      <p>Keep the tab strip along the top or move it to a sidebar you can drag to any width, and jump straight to an open tab by title or URL with <kbd>Ctrl</kbd>+<kbd>K</kbd>. Session restore, favicons, a bookmarks bar, history and downloads all behave the way they should.</p>
     </div>
     <div class="feature-card">
       <svg viewBox="0 0 24 24"><path d="M16 4l4 4-4 4M8 20l-4-4 4-4M14 4l-4 16" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <h3>Open source</h3>
       <p>The full source is on GitHub. Read it, build it yourself, or send a fix.</p>
-    </div>
-    <div class="feature-card">
-      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1.5"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="7" y1="6.5" x2="7" y2="6.5" stroke-linecap="round" stroke-width="2.4"/></svg>
-      <h3>Tabs that stay put</h3>
-      <p>Session restore, favicons, a bookmarks bar, history and downloads — the basics, done properly.</p>
     </div>
     <div class="feature-card feature-card--extensions">
       <svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M7 7l3 3M14 14l3 3M17 7l-3 3M10 14l-3 3" stroke-linecap="round"/><circle cx="12" cy="12" r="3"/></svg>
@@ -104,7 +114,7 @@
 </section>
 
 <section class="download" id="download">
-  <span class="version-chip">v0.1.1</span>
+  <span class="version-chip">v0.1.2</span>
   <h2>Take it for a flight</h2>
   <p>Free, open source, and built to be read. Grab the installer that matches how you like to install things.</p>
   <div class="cta-row">
