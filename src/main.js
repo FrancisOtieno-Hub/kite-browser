@@ -108,6 +108,22 @@ const settingsHomepageRadios = document.querySelectorAll('input[name="settings-h
 const settingsHomepageUrl = document.getElementById("settings-homepage-url");
 const settingsDownloadsPath = document.getElementById("settings-downloads-path");
 const settingsChooseDownloadsBtn = document.getElementById("settings-choose-downloads-btn");
+const fdmEnabled = document.getElementById("settings-fdm-enabled");
+const fdmStatusText = document.getElementById("settings-fdm-status");
+const fdmMessage = document.getElementById("settings-fdm-message");
+const fdmLocateBtn = document.getElementById("settings-fdm-locate-btn");
+const fdmTestBtn = document.getElementById("settings-fdm-test-btn");
+const fdmArgsInput = document.getElementById("settings-fdm-args");
+const fdmArgsSaveBtn = document.getElementById("settings-fdm-args-save-btn");
+const extImportBrowserBtn = document.getElementById("ext-import-browser-btn");
+const extImportFileBtn = document.getElementById("ext-import-file-btn");
+const extImportFolderBtn = document.getElementById("ext-import-folder-btn");
+const extImportPanel = document.getElementById("ext-import-panel");
+const extImportStatus = document.getElementById("ext-import-status");
+const extImportCandidates = document.getElementById("ext-import-candidates");
+const extImportSelectedBtn = document.getElementById("ext-import-selected-btn");
+const extImportCloseBtn = document.getElementById("ext-import-close-btn");
+const extImportResults = document.getElementById("ext-import-results");
 const settingsContentBlocking = document.getElementById("settings-content-blocking");
 const settingsClearDataBtn = document.getElementById("settings-clear-data-btn");
 const settingsBlocklistStatus = document.getElementById("settings-blocklist-status");
@@ -1154,6 +1170,8 @@ function loadSettings() {
     })
     .catch((err) => console.error("[kite] get_settings failed:", err));
 
+  loadFdmStatus();
+
   invoke("get_blocklist_status")
     .then((status) => {
       settingsBlocklistStatus.textContent = formatBlocklistStatus(status);
@@ -1503,6 +1521,16 @@ function renderExtensionList(extensions) {
     matches.textContent = ext.matches.length ? ext.matches.join(", ") : "No sites matched";
     text.appendChild(matches);
 
+    if (ext.imported_from) {
+      const badge = document.createElement("span");
+      badge.className = "ext-badge";
+      badge.textContent = `Imported from ${ext.imported_from}`;
+      text.appendChild(badge);
+    }
+    if (ext.import_warnings && ext.import_warnings.length) {
+      text.appendChild(buildWarningsDetails(ext.import_warnings));
+    }
+
     li.appendChild(text);
 
     // Same plain-checkbox convention as settings-content-blocking - no
@@ -1554,6 +1582,241 @@ extensionsReloadBtn.addEventListener("click", () => {
       extensionsReloadBtn.disabled = false;
       extensionsReloadBtn.textContent = "Reload extensions";
     });
+});
+
+// Collapsible "N things to know" list - used for both an installed
+// extension's stored import warnings and a fresh import's result.
+function buildWarningsDetails(warnings) {
+  const details = document.createElement("details");
+  details.className = "ext-warnings";
+  const summary = document.createElement("summary");
+  summary.textContent =
+    warnings.length === 1 ? "1 thing to know" : `${warnings.length} things to know`;
+  details.appendChild(summary);
+  const ul = document.createElement("ul");
+  warnings.forEach((w) => {
+    const li = document.createElement("li");
+    li.textContent = w;
+    ul.appendChild(li);
+  });
+  details.appendChild(ul);
+  return details;
+}
+
+// --- Extension import (Chrome / Chromium-family / Firefox) ---
+
+let importCandidates = []; // last scan_importable_extensions result
+
+function setImportBusy(busy) {
+  [extImportBrowserBtn, extImportFileBtn, extImportFolderBtn, extImportSelectedBtn].forEach(
+    (b) => (b.disabled = busy)
+  );
+}
+
+function renderImportResults(outcomes) {
+  extImportResults.innerHTML = "";
+  outcomes.forEach((o) => {
+    const li = document.createElement("li");
+    li.className = "library-item";
+    const text = document.createElement("div");
+    text.className = "library-item-text";
+
+    const title = document.createElement("div");
+    title.className = "library-item-title";
+    title.textContent = `${o.ok ? "Imported" : "Couldn't import"}: ${o.label}`;
+    text.appendChild(title);
+
+    const detail = document.createElement("div");
+    detail.className = o.ok ? "library-item-url" : "library-item-url ext-result-error";
+    if (o.ok) {
+      detail.textContent =
+        o.imported.length === 1
+          ? "Added below, disabled - switch it on to use it."
+          : `Added as ${o.imported.length} entries below, all disabled.`;
+    } else {
+      detail.textContent = o.error || "Unknown error.";
+    }
+    text.appendChild(detail);
+
+    if (o.warnings && o.warnings.length) {
+      text.appendChild(buildWarningsDetails(o.warnings));
+    }
+    li.appendChild(text);
+    extImportResults.appendChild(li);
+  });
+}
+
+function runImport(requests) {
+  setImportBusy(true);
+  return invoke("import_extensions", { requests })
+    .then((result) => {
+      renderImportResults(result.outcomes);
+      renderExtensionList(result.extensions);
+      return result;
+    })
+    .catch((err) => {
+      console.error("[kite] import_extensions failed:", err);
+      renderImportResults([{ ok: false, label: "Import", error: String(err), imported: [], warnings: [] }]);
+    })
+    .finally(() => {
+      setImportBusy(false);
+      updateImportSelectedState();
+    });
+}
+
+function updateImportSelectedState() {
+  const any = extImportCandidates.querySelector("input[type=checkbox]:checked");
+  extImportSelectedBtn.disabled = !any;
+}
+
+function renderImportCandidates(list) {
+  importCandidates = list;
+  extImportCandidates.innerHTML = "";
+  const importable = list.filter((c) => c.importable);
+  const skipped = list.length - importable.length;
+
+  if (list.length === 0) {
+    extImportStatus.textContent =
+      "No extensions found. Kite looks in the standard Chrome, Edge, Brave, Vivaldi, Chromium and Firefox profile folders.";
+  } else if (importable.length === 0) {
+    extImportStatus.textContent = `Found ${list.length}, but none have page scripts Kite can run.`;
+  } else {
+    extImportStatus.textContent =
+      `${importable.length} can be imported.` +
+      (skipped ? ` ${skipped} other${skipped === 1 ? "" : "s"} can't (no page scripts - they work through browser features Kite doesn't have).` : "");
+  }
+
+  importable.forEach((c) => {
+    const li = document.createElement("li");
+    li.className = "library-item";
+    const label = document.createElement("label");
+    label.className = "settings-radio";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.index = String(list.indexOf(c));
+    box.addEventListener("change", updateImportSelectedState);
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(` ${c.name}`));
+    li.appendChild(label);
+
+    const meta = document.createElement("span");
+    meta.className = "library-item-meta";
+    meta.textContent = `${c.browser}${c.version ? " · v" + c.version : ""}`;
+    li.appendChild(meta);
+    extImportCandidates.appendChild(li);
+  });
+  updateImportSelectedState();
+}
+
+extImportBrowserBtn.addEventListener("click", () => {
+  extImportPanel.hidden = false;
+  extImportStatus.textContent = "Looking through your browsers\u2026";
+  extImportCandidates.innerHTML = "";
+  extImportSelectedBtn.disabled = true;
+  setImportBusy(true);
+  invoke("scan_importable_extensions")
+    .then(renderImportCandidates)
+    .catch((err) => {
+      console.error("[kite] scan_importable_extensions failed:", err);
+      extImportStatus.textContent = `Couldn't scan: ${err}`;
+    })
+    .finally(() => {
+      setImportBusy(false);
+      updateImportSelectedState();
+    });
+});
+
+extImportSelectedBtn.addEventListener("click", () => {
+  const requests = [];
+  extImportCandidates.querySelectorAll("input[type=checkbox]:checked").forEach((box) => {
+    const c = importCandidates[Number(box.dataset.index)];
+    if (c) requests.push({ path: c.path, tag: c.tag, label: c.browser, ext_id: c.ext_id });
+  });
+  if (requests.length === 0) return;
+  runImport(requests).then(() => {
+    extImportPanel.hidden = true;
+  });
+});
+
+extImportCloseBtn.addEventListener("click", () => {
+  extImportPanel.hidden = true;
+});
+
+function importFromPicker(kind) {
+  invoke("pick_extension_source", { kind })
+    .then((path) => {
+      if (path) return runImport([{ path }]); // null = cancelled picker
+    })
+    .catch((err) => console.error("[kite] pick_extension_source failed:", err));
+}
+extImportFileBtn.addEventListener("click", () => importFromPicker("file"));
+extImportFolderBtn.addEventListener("click", () => importFromPicker("folder"));
+
+// --- Free Download Manager (Settings > Downloads) ---
+
+function renderFdmStatus(status) {
+  fdmEnabled.checked = status.enabled;
+  fdmArgsInput.value = status.args;
+  fdmArgsInput.placeholder = status.default_args;
+  fdmStatusText.textContent = status.found_path
+    ? `Found: ${status.found_path}`
+    : "Free Download Manager wasn't found. Install it, or use \u201cLocate fdm.exe\u201d.";
+  fdmTestBtn.disabled = !status.found_path;
+}
+
+function loadFdmStatus() {
+  invoke("get_fdm_status")
+    .then(renderFdmStatus)
+    .catch((err) => console.error("[kite] get_fdm_status failed:", err));
+}
+
+function showFdmMessage(text, isError) {
+  fdmMessage.textContent = text;
+  fdmMessage.classList.toggle("ext-result-error", !!isError);
+}
+
+fdmEnabled.addEventListener("change", () => {
+  const wanted = fdmEnabled.checked;
+  invoke("set_fdm_enabled", { enabled: wanted })
+    .then((status) => {
+      renderFdmStatus(status);
+      showFdmMessage(wanted ? "Downloads will now go to Free Download Manager." : "", false);
+    })
+    .catch((err) => {
+      fdmEnabled.checked = !wanted;
+      showFdmMessage(String(err), true);
+    });
+});
+
+fdmLocateBtn.addEventListener("click", () => {
+  invoke("choose_fdm_path")
+    .then((status) => {
+      if (status) {
+        renderFdmStatus(status);
+        showFdmMessage("", false);
+      }
+    })
+    .catch((err) => showFdmMessage(String(err), true));
+});
+
+fdmTestBtn.addEventListener("click", () => {
+  invoke("send_test_link_to_fdm")
+    .then(() =>
+      showFdmMessage(
+        "Sent. Free Download Manager should now offer to download a test page from freedownloadmanager.org. If nothing appeared, adjust the arguments under Advanced.",
+        false
+      )
+    )
+    .catch((err) => showFdmMessage(String(err), true));
+});
+
+fdmArgsSaveBtn.addEventListener("click", () => {
+  invoke("set_fdm_args", { args: fdmArgsInput.value })
+    .then((status) => {
+      renderFdmStatus(status);
+      showFdmMessage("Saved.", false);
+    })
+    .catch((err) => showFdmMessage(String(err), true));
 });
 
 // Shows exactly one of the three vault-state sections based on

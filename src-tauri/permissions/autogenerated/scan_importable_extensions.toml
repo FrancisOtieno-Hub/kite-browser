@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-scan-importable-extensions"
+description = "Enables the scan_importable_extensions command without any pre-configured scope."
+commands.allow = ["scan_importable_extensions"]
+
+[[permission]]
+identifier = "deny-scan-importable-extensions"
+description = "Denies the scan_importable_extensions command without any pre-configured scope."
+commands.deny = ["scan_importable_extensions"]

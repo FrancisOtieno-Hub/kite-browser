@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-import-extensions"
+description = "Enables the import_extensions command without any pre-configured scope."
+commands.allow = ["import_extensions"]
+
+[[permission]]
+identifier = "deny-import-extensions"
+description = "Denies the import_extensions command without any pre-configured scope."
+commands.deny = ["import_extensions"]

@@ -111,9 +111,11 @@
 
   function activateHintTarget(el, openInNewTab) {
     if (openInNewTab && el.tagName === 'A' && el.href) {
-      // window.open() does nothing here - Kite's WebView2 layer has no
-      // NewWindowRequested handler wired to anything, confirmed in
-      // testing. open_link_in_new_tab is a purpose-built Tauri command
+      // Historical note: before v0.1.3 window.open() did nothing here,
+      // because Kite's WebView2 layer had no NewWindowRequested handler
+      // (it now does - see handle_new_window_request in main.rs, which
+      // opens such requests as tabs). open_link_in_new_tab is still the
+      // direct route for this feature: a purpose-built Tauri command
       // (content.json/require_content-gated, same pattern as
       // report_context_menu) that calls the same create_tab_webview path
       // the native "Open link in new tab" menu item uses.

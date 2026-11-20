@@ -50,6 +50,11 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use url::Url;
 
+mod ext_import;
+mod fdm;
+mod url_glob;
+use url_glob::glob_to_regex;
+
 const CHROME_HEIGHT: f64 = 124.0; // tab bar row + toolbar row + bookmarks bar row combined
 const MAIN_WEBVIEW_LABEL: &str = "chrome";
 // The friendly "address" for Kite's own new-tab/home page. It isn't a real
@@ -108,6 +113,12 @@ const FAVICON_SCRIPT: &str = include_str!("favicon.js");
 // via the narrowly-scoped report_login_submit command - see that
 // command's own comment for what happens (and doesn't yet) with a report.
 const PASSWORD_CAPTURE_SCRIPT: &str = include_str!("password_capture.js");
+
+// Stand-in for window.open("") / window.open("about:blank") - the "open a
+// blank window, set its address afterwards" pattern - which turns the
+// address into a normal tab. See popup_shim.js for why this has to live in
+// the page rather than in handle_new_window_request.
+const POPUP_SHIM_SCRIPT: &str = include_str!("popup_shim.js");
 
 #[derive(Clone, Serialize)]
 struct TabInfo {
@@ -612,6 +623,24 @@ struct Settings {
     // still stored) while tab_bar_position is "top".
     #[serde(default = "default_sidebar_width")]
     sidebar_width: f64,
+    // Free Download Manager handoff (see the fdm module + try_hand_off_to_fdm).
+    // Off by default: Kite's own downloader stays the default, and FDM
+    // can't see a page's cookies/session, so sending every download there
+    // is the person's explicit choice.
+    #[serde(default)]
+    fdm_enabled: bool,
+    // User-chosen fdm.exe, only needed when it isn't in a standard install
+    // location. None -> auto-detect.
+    #[serde(default)]
+    fdm_path: Option<String>,
+    // Command-line template, "{url}" replaced by the link. Editable because
+    // FDM's CLI syntax isn't publicly documented - see fdm.rs.
+    #[serde(default = "default_fdm_args")]
+    fdm_args: String,
+}
+
+fn default_fdm_args() -> String {
+    fdm::DEFAULT_ARGS.to_string()
 }
 
 fn default_search_engine() -> String {
@@ -653,6 +682,9 @@ impl Default for Settings {
             sync_last_pushed_at: None,
             tab_bar_position: default_tab_bar_position(),
             sidebar_width: default_sidebar_width(),
+            fdm_enabled: false,
+            fdm_path: None,
+            fdm_args: default_fdm_args(),
         }
     }
 }
@@ -770,6 +802,12 @@ struct ExtensionManifest {
     // existing extensions don't need a format migration once it is.
     #[serde(default)]
     permissions: Vec<String>,
+    // Set by the Chrome/Firefox importer (see ext_import.rs); absent for
+    // hand-written and built-in extensions.
+    #[serde(default)]
+    imported_from: Option<String>,
+    #[serde(default)]
+    import_warnings: Vec<String>,
 }
 fn default_run_at() -> String {
     "document_start".to_string()
@@ -821,28 +859,23 @@ struct ExtensionInfo {
     version: String,
     matches: Vec<String>,
     enabled: bool,
+    imported_from: Option<String>,
+    import_warnings: Vec<String>,
 }
 
-// Tiny Tampermonkey-style glob -> regex translator: '*' becomes '.*',
-// every regex metacharacter is escaped. Good enough for the
-// scheme://host/path shape extension authors actually write; not a full
-// URLPattern implementation.
-fn glob_to_regex(pattern: &str) -> String {
-    let mut out = String::from("^");
-    for ch in pattern.chars() {
-        match ch {
-            '*' => out.push_str(".*"),
-            c if "\\.+?^$()[]{}|".contains(c) => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => out.push(c),
-        }
+fn extension_info(e: &LoadedExtension) -> ExtensionInfo {
+    ExtensionInfo {
+        id: e.manifest.id.clone(),
+        name: e.manifest.name.clone(),
+        version: e.manifest.version.clone(),
+        matches: e.manifest.matches.clone(),
+        enabled: e.enabled,
+        imported_from: e.manifest.imported_from.clone(),
+        import_warnings: e.manifest.import_warnings.clone(),
     }
-    out.push('$');
-    out
 }
 
+// (glob_to_regex now lives in url_glob.rs - see the note there.)
 // Wraps an extension's own JS/CSS in a guard that checks the *current*
 // page's URL against its match/exclude patterns before doing anything -
 // see the module comment above for why that check has to live here,
@@ -1002,13 +1035,21 @@ fn load_extensions(app: &tauri::AppHandle) -> ExtensionManager {
             let js_body: String = manifest
                 .js
                 .iter()
-                .filter_map(|f| fs::read_to_string(path.join(f)).ok())
+                .filter_map(|f| {
+                    // A manifest (now possibly an imported one) must not be
+                    // able to point js/css outside its own folder.
+                    let rel = ext_import::normalize_rel_path(f)?;
+                    fs::read_to_string(path.join(rel)).ok()
+                })
                 .collect::<Vec<_>>()
                 .join("\n;\n");
             let css_body: String = manifest
                 .css
                 .iter()
-                .filter_map(|f| fs::read_to_string(path.join(f)).ok())
+                .filter_map(|f| {
+                    let rel = ext_import::normalize_rel_path(f)?;
+                    fs::read_to_string(path.join(rel)).ok()
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
             let compiled_js = build_extension_script(&manifest, &js_body, &css_body);
@@ -1024,17 +1065,7 @@ fn list_extensions(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Vec
     require_chrome(&webview)?;
     let state = app.state::<SharedExtensions>();
     let mgr = state.lock_recover();
-    Ok(mgr
-        .extensions
-        .iter()
-        .map(|e| ExtensionInfo {
-            id: e.manifest.id.clone(),
-            name: e.manifest.name.clone(),
-            version: e.manifest.version.clone(),
-            matches: e.manifest.matches.clone(),
-            enabled: e.enabled,
-        })
-        .collect())
+    Ok(mgr.extensions.iter().map(extension_info).collect())
 }
 
 // Toggling doesn't restart anything: it flips the in-memory flag (read by
@@ -1075,17 +1106,7 @@ fn set_extension_enabled(webview: tauri::Webview, app: tauri::AppHandle, id: Str
 fn reload_extensions(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Vec<ExtensionInfo>, String> {
     require_chrome(&webview)?;
     let reloaded = load_extensions(&app);
-    let infos: Vec<ExtensionInfo> = reloaded
-        .extensions
-        .iter()
-        .map(|e| ExtensionInfo {
-            id: e.manifest.id.clone(),
-            name: e.manifest.name.clone(),
-            version: e.manifest.version.clone(),
-            matches: e.manifest.matches.clone(),
-            enabled: e.enabled,
-        })
-        .collect();
+    let infos: Vec<ExtensionInfo> = reloaded.extensions.iter().map(extension_info).collect();
 
     let state = app.state::<SharedExtensions>();
     *state.lock_recover() = reloaded;
@@ -1108,6 +1129,304 @@ fn open_extensions_folder(webview: tauri::Webview, app: tauri::AppHandle) -> Res
     };
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     app.opener().reveal_item_in_dir(&dir).map_err(|e| e.to_string())
+}
+
+// --- Extension import (Chrome / Chromium-family / Firefox) ---
+//
+// The conversion logic lives in ext_import.rs (and is unit-tested there);
+// these are the thin Tauri commands around it. Imports land in the same
+// extensions folder as hand-dropped extensions, always disabled - the
+// person still has to switch them on, same opt-in as every other extension.
+
+// Finds extensions already installed in this machine's other browsers.
+// Reads a lot of small files, so it runs on the blocking pool rather than
+// the UI thread.
+#[tauri::command]
+async fn scan_importable_extensions(webview: tauri::Webview) -> Result<Vec<ext_import::Candidate>, String> {
+    require_chrome(&webview)?;
+    tauri::async_runtime::spawn_blocking(|| ext_import::scan_installed(&ext_import::ScanRoots::from_env()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// "Import from file / folder": native picker for a .crx/.xpi/.zip or an
+// unpacked extension folder. kind is "file" | "folder". None = cancelled.
+#[tauri::command]
+async fn pick_extension_source(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    kind: String,
+) -> Result<Option<String>, String> {
+    require_chrome(&webview)?;
+    if kind != "file" && kind != "folder" {
+        return Err("kind must be \"file\" or \"folder\"".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let builder = app.dialog().file();
+        if kind == "folder" {
+            builder.pick_folder(move |picked| {
+                let _ = tx.send(picked);
+            });
+        } else {
+            builder
+                .add_filter("Browser extension", &["crx", "xpi", "zip"])
+                .pick_file(move |picked| {
+                    let _ = tx.send(picked);
+                });
+        }
+        let picked = rx.recv().map_err(|e| e.to_string())?;
+        match picked {
+            None => Ok(None),
+            Some(fp) => Ok(Some(fp.into_path().map_err(|e| e.to_string())?.to_string_lossy().to_string())),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Deserialize)]
+struct ImportRequest {
+    path: String,
+    // Present for scan-based imports (which browser it came from); absent
+    // for a manually picked file/folder, where ext_import derives them.
+    tag: Option<String>,
+    label: Option<String>,
+    ext_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ImportResult {
+    outcomes: Vec<ext_import::ImportOutcome>,
+    extensions: Vec<ExtensionInfo>,
+}
+
+#[tauri::command]
+async fn import_extensions(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    requests: Vec<ImportRequest>,
+) -> Result<ImportResult, String> {
+    require_chrome(&webview)?;
+    if requests.is_empty() {
+        return Err("nothing selected to import".to_string());
+    }
+    if requests.len() > 64 {
+        return Err("too many extensions selected at once".to_string());
+    }
+    let ext_root = {
+        let state = app.state::<SharedExtensions>();
+        let dir = state.lock_recover().dir.clone();
+        dir
+    };
+
+    let outcomes = tauri::async_runtime::spawn_blocking(move || {
+        requests
+            .iter()
+            .map(|r| {
+                // label is only ever shown back to the person; keep it short.
+                let label = r.label.as_ref().map(|l| l.chars().take(40).collect::<String>());
+                ext_import::import_from_path(
+                    &ext_root,
+                    std::path::Path::new(&r.path),
+                    r.tag.as_deref(),
+                    label.as_deref(),
+                    r.ext_id.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Re-importing replaces the code, so anything that was enabled goes
+    // back to disabled until the person turns it on again.
+    let touched: Vec<String> = outcomes
+        .iter()
+        .flat_map(|o| o.imported.iter().map(|i| i.id.clone()))
+        .collect();
+    if !touched.is_empty() {
+        {
+            let state = app.state::<SharedAppData>();
+            let mut st = state.lock_recover();
+            st.data.extensions.enabled_ids.retain(|id| !touched.contains(id));
+        }
+        save_persisted_data(&app);
+    }
+
+    let reloaded = load_extensions(&app);
+    let extensions: Vec<ExtensionInfo> = reloaded.extensions.iter().map(extension_info).collect();
+    {
+        let state = app.state::<SharedExtensions>();
+        *state.lock_recover() = reloaded;
+    }
+    Ok(ImportResult { outcomes, extensions })
+}
+
+// --- Free Download Manager integration ---
+//
+// Mechanics (finding fdm.exe, building the command line, launching it)
+// live in fdm.rs. This section is the settings surface plus the decision
+// of when a browser download gets handed off.
+
+#[derive(Serialize)]
+struct FdmStatus {
+    enabled: bool,
+    // Where fdm.exe was found (configured path, else a standard install
+    // location). None -> not installed / not found.
+    found_path: Option<String>,
+    custom_path: Option<String>,
+    args: String,
+    default_args: String,
+}
+
+fn fdm_status_now(app: &tauri::AppHandle) -> FdmStatus {
+    let (enabled, custom_path, args) = {
+        let state = app.state::<SharedAppData>();
+        let st = state.lock_recover();
+        let s = &st.data.settings;
+        (s.fdm_enabled, s.fdm_path.clone(), s.fdm_args.clone())
+    };
+    FdmStatus {
+        enabled,
+        found_path: fdm::find(custom_path.as_deref()).map(|p| p.to_string_lossy().to_string()),
+        custom_path,
+        args,
+        default_args: fdm::DEFAULT_ARGS.to_string(),
+    }
+}
+
+#[tauri::command]
+fn get_fdm_status(webview: tauri::Webview, app: tauri::AppHandle) -> Result<FdmStatus, String> {
+    require_chrome(&webview)?;
+    Ok(fdm_status_now(&app))
+}
+
+// Refuses to turn the feature on while FDM can't be found, so "enabled"
+// never silently means "every download goes nowhere".
+#[tauri::command]
+fn set_fdm_enabled(webview: tauri::Webview, app: tauri::AppHandle, enabled: bool) -> Result<FdmStatus, String> {
+    require_chrome(&webview)?;
+    if enabled && fdm_status_now(&app).found_path.is_none() {
+        return Err(
+            "Free Download Manager wasn't found. Install it, or use \"Locate fdm.exe\" to point Kite at it."
+                .to_string(),
+        );
+    }
+    {
+        let state = app.state::<SharedAppData>();
+        state.lock_recover().data.settings.fdm_enabled = enabled;
+    }
+    save_persisted_data(&app);
+    Ok(fdm_status_now(&app))
+}
+
+#[tauri::command]
+async fn choose_fdm_path(webview: tauri::Webview, app: tauri::AppHandle) -> Result<Option<FdmStatus>, String> {
+    require_chrome(&webview)?;
+    let app_for_dialog = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || -> Result<Option<std::path::PathBuf>, String> {
+        use tauri_plugin_dialog::DialogExt;
+        let (tx, rx) = std::sync::mpsc::channel();
+        app_for_dialog
+            .dialog()
+            .file()
+            .add_filter("Free Download Manager", &["exe"])
+            .pick_file(move |p| {
+                let _ = tx.send(p);
+            });
+        match rx.recv().map_err(|e| e.to_string())? {
+            None => Ok(None),
+            Some(fp) => Ok(Some(fp.into_path().map_err(|e| e.to_string())?)),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let Some(path) = picked else { return Ok(None) };
+    if !fdm::is_fdm_exe_name(&path) {
+        return Err("That isn't fdm.exe - pick the Free Download Manager executable.".to_string());
+    }
+    {
+        let state = app.state::<SharedAppData>();
+        state.lock_recover().data.settings.fdm_path = Some(path.to_string_lossy().to_string());
+    }
+    save_persisted_data(&app);
+    Ok(Some(fdm_status_now(&app)))
+}
+
+#[tauri::command]
+fn set_fdm_args(webview: tauri::Webview, app: tauri::AppHandle, args: String) -> Result<FdmStatus, String> {
+    require_chrome(&webview)?;
+    let args: String = args.trim().chars().take(200).collect();
+    {
+        let state = app.state::<SharedAppData>();
+        state.lock_recover().data.settings.fdm_args =
+            if args.is_empty() { default_fdm_args() } else { args };
+    }
+    save_persisted_data(&app);
+    Ok(fdm_status_now(&app))
+}
+
+// Settings' "send a test link": lets the person confirm the handoff works
+// on *their* machine (the one part that depends on FDM's own CLI) without
+// having to trigger a real download.
+#[tauri::command]
+fn send_test_link_to_fdm(webview: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
+    require_chrome(&webview)?;
+    let (custom, args) = {
+        let state = app.state::<SharedAppData>();
+        let st = state.lock_recover();
+        (st.data.settings.fdm_path.clone(), st.data.settings.fdm_args.clone())
+    };
+    let exe = fdm::find(custom.as_deref()).ok_or("Free Download Manager wasn't found")?;
+    let url = Url::parse("https://www.freedownloadmanager.org/").map_err(|e| e.to_string())?;
+    fdm::launch(&exe, &args, &url)
+}
+
+// Called from the on_download hook. true = handed off (caller cancels
+// Kite's own download); false = not handled, Kite downloads as usual - so
+// every "can't / shouldn't" path (feature off, private tab, odd URL
+// scheme, FDM missing, launch error) degrades to a normal download.
+fn try_hand_off_to_fdm(app: &tauri::AppHandle, source_label: &str, url: &Url) -> bool {
+    let (enabled, custom, args) = {
+        let state = app.state::<SharedAppData>();
+        let st = state.lock_recover();
+        let s = &st.data.settings;
+        (s.fdm_enabled, s.fdm_path.clone(), s.fdm_args.clone())
+    };
+    if !enabled || !fdm::is_handoff_url(url) {
+        return false;
+    }
+    // Private tabs never leave a trace in Kite; FDM keeps its own history,
+    // so a private download is not sent there.
+    let is_private = {
+        let state = app.state::<SharedTabState>();
+        let st = state.lock_recover();
+        st.tabs
+            .iter()
+            .find(|t| t.label == source_label)
+            .map(|t| t.is_private)
+            .unwrap_or(false)
+    };
+    if is_private {
+        return false;
+    }
+    let Some(exe) = fdm::find(custom.as_deref()) else {
+        eprintln!("[kite] FDM handoff enabled but fdm.exe not found; downloading in Kite instead");
+        return false;
+    };
+    match fdm::launch(&exe, &args, url) {
+        Ok(()) => {
+            eprintln!("[kite] download handed to Free Download Manager: {url}");
+            true
+        }
+        Err(e) => {
+            eprintln!("[kite] FDM handoff failed ({e}); downloading in Kite instead");
+            false
+        }
+    }
 }
 
 // --- Password vault ---
@@ -3626,6 +3945,75 @@ fn push_crashed_url_to_page(app: &tauri::AppHandle, label: &str) {
     }
 }
 
+// Answers a page's request to open a new window (target="_blank" links,
+// window.open(), middle-click on some sites' JS-routed links). Kite has no
+// secondary top-level windows, so the request is turned into a new tab in
+// the same window and the native popup is denied.
+//
+// Guards, same spirit as open_link_in_new_tab below (any page script can
+// trigger this, not just a trusted click):
+//   - only http/https targets - about:blank / javascript: / data: popups
+//     are denied rather than opened as blank tabs,
+//   - the shared per-source-tab LinkOpenThrottle, so a page can't spam
+//     tabs faster than LINK_OPEN_RATE_LIMIT_MS,
+//   - a private tab's popups stay private.
+//
+// Tab creation is deferred onto the async runtime rather than done inside
+// this callback: wry invokes it from WebView2's NewWindowRequested event,
+// and building another webview re-entrantly from inside that event is
+// exactly the deadlock Microsoft's WebView2 threading docs warn about.
+fn handle_new_window_request(
+    app: &tauri::AppHandle,
+    source_label: &str,
+    target: Url,
+) -> tauri::webview::NewWindowResponse<tauri::Wry> {
+    use tauri::webview::NewWindowResponse;
+
+    if target.scheme() != "http" && target.scheme() != "https" {
+        eprintln!("[kite] new-window request denied (unsupported scheme): {target}");
+        return NewWindowResponse::Deny;
+    }
+
+    {
+        let state = app.state::<SharedLinkOpenThrottle>();
+        let mut st = state.lock_recover();
+        let now = std::time::Instant::now();
+        if let Some(last) = st.0.get(source_label) {
+            if now.duration_since(*last).as_millis() < LINK_OPEN_RATE_LIMIT_MS {
+                eprintln!("[kite] new-window request rate-limited: {target}");
+                return NewWindowResponse::Deny;
+            }
+        }
+        st.0.insert(source_label.to_string(), now);
+    }
+
+    let source_is_private = {
+        let state = app.state::<SharedTabState>();
+        let st = state.lock_recover();
+        st.tabs
+            .iter()
+            .find(|t| t.label == source_label)
+            .map(|t| t.is_private)
+            .unwrap_or(false)
+    };
+
+    eprintln!("[kite] new-window request -> new tab ({source_label}): {target}");
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match create_tab_webview(&app, target.as_str(), source_is_private) {
+            Ok(label) => {
+                if let Err(e) = activate_tab(&app, &label) {
+                    eprintln!("[kite] activate_tab failed for popup tab {label}: {e}");
+                }
+                emit_tabs_changed(&app);
+                emit_active_url(&app);
+            }
+            Err(e) => eprintln!("[kite] could not open popup as a tab: {e}"),
+        }
+    });
+    NewWindowResponse::Deny
+}
+
 fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Result<String, String> {
     let window = app.get_window("main").ok_or("main window missing")?;
 
@@ -3656,6 +4044,8 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
     let label_for_nav = label.clone();
     let app_for_title = app.clone();
     let label_for_title = label.clone();
+    let app_for_popup = app.clone();
+    let label_for_popup = label.clone();
     let url_for_error = url.to_string();
 
     // Every *enabled* extension's compiled init script gets added below,
@@ -3688,7 +4078,8 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
     let mut builder = WebviewBuilder::new(label.clone(), webview_url)
         .initialization_script(CONTEXT_MENU_SCRIPT)
         .initialization_script(FAVICON_SCRIPT)
-        .initialization_script(PASSWORD_CAPTURE_SCRIPT);
+        .initialization_script(PASSWORD_CAPTURE_SCRIPT)
+        .initialization_script(POPUP_SHIM_SCRIPT);
     for script in extension_scripts {
         builder = builder.initialization_script(script);
     }
@@ -3702,6 +4093,15 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
                 // nonPersistent DataStore on macOS/iOS). Unsupported on
                 // Android, which Kite doesn't target anyway.
                 .incognito(private)
+                // Without this, wry answers every NewWindowRequested with
+                // SetHandled(true) and nothing else - i.e. it silently
+                // swallows target="_blank" links and window.open() calls.
+                // That is why links inside Google's AI Overview (and any
+                // other result that opens in a new window) appeared to do
+                // nothing. See handle_new_window_request.
+                .on_new_window(move |popup_url, _features| {
+                    handle_new_window_request(&app_for_popup, &label_for_popup, popup_url)
+                })
                 .on_navigation(move |nav_url| {
                     eprintln!("[kite] on_navigation ({label_for_nav}): {nav_url}");
                     let raw = nav_url.to_string();
@@ -3813,6 +4213,11 @@ fn create_tab_webview(app: &tauri::AppHandle, url: &str, private: bool) -> Resul
                     match event {
                         DownloadEvent::Requested { url, destination } => {
                             let app = webview.app_handle();
+                            // Free Download Manager handoff (opt-in). Returning
+                            // false cancels Kite's own download of this file.
+                            if try_hand_off_to_fdm(app, webview.label(), &url) {
+                                return false;
+                            }
                             match resolve_download_path(app, destination) {
                                 Some(path) => {
                                     eprintln!(
@@ -4957,6 +5362,29 @@ fn vault_autofill_menu_labels(app: &tauri::AppHandle) -> (Vec<String>, Vec<Strin
     (card_labels, address_labels)
 }
 
+// "Download Link with Free Download Manager" - only offered when FDM is
+// actually installed, whether or not automatic handoff is switched on:
+// it's the manual route for downloads the person wants in FDM without
+// sending everything there.
+fn fdm_link_menu_items(app: &tauri::AppHandle) -> Result<Vec<MenuItem<tauri::Wry>>, String> {
+    let custom = {
+        let state = app.state::<SharedAppData>();
+        let c = state.lock_recover().data.settings.fdm_path.clone();
+        c
+    };
+    if fdm::find(custom.as_deref()).is_none() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![MenuItem::with_id(
+        app,
+        "ctx-fdm-link",
+        "Download Link with Free Download Manager",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?])
+}
+
 // Builds the native popup menu shown for a given right-click target.
 // target_type is already validated against a fixed set by the caller
 // (report_context_menu) before reaching here.
@@ -4977,7 +5405,8 @@ fn build_context_menu(
             .item(
                 &MenuItem::with_id(app, "ctx-copy-link", "Copy Link", true, None::<&str>)
                     .map_err(|e| e.to_string())?,
-            ),
+            )
+            .items(&fdm_link_menu_items(app)?.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect::<Vec<_>>()),
         "image" if has_src => builder
             .item(
                 &MenuItem::with_id(app, "ctx-open-image", "Open Image in New Tab", true, None::<&str>)
@@ -5098,6 +5527,23 @@ fn handle_context_menu_event(app: &tauri::AppHandle, id: &str) {
         "ctx-copy-link" => {
             if let Some(href) = target.href {
                 let _ = app.clipboard().write_text(href);
+            }
+        }
+        "ctx-fdm-link" => {
+            if let Some(href) = target.href {
+                let (custom, args) = {
+                    let state = app.state::<SharedAppData>();
+                    let st = state.lock_recover();
+                    (st.data.settings.fdm_path.clone(), st.data.settings.fdm_args.clone())
+                };
+                match (fdm::find(custom.as_deref()), Url::parse(&href)) {
+                    (Some(exe), Ok(url)) => {
+                        if let Err(e) = fdm::launch(&exe, &args, &url) {
+                            eprintln!("[kite] FDM link handoff failed: {e}");
+                        }
+                    }
+                    _ => eprintln!("[kite] FDM link handoff skipped (FDM not found or bad URL)"),
+                }
             }
         }
         "ctx-copy-image-src" => {
@@ -6943,7 +7389,17 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_opener::init())
+        // The opener plugin's default init script swallows every left-click on
+        // a target="_blank" link (and Ctrl/Shift-clicks): it calls
+        // preventDefault() and then asks the *plugin* to open the URL in the
+        // system browser - a call that is denied for web pages (no opener
+        // permission is granted to content webviews) and whose failure is never
+        // reported. Net effect before this was switched off: such links did
+        // nothing at all, and WebView2 never got to raise the new-window
+        // request that handle_new_window_request turns into a Kite tab. We
+        // only use the plugin's Rust side (reveal_item_in_dir etc.), so the
+        // click script stays off.
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(TabState {
             tabs: Vec::new(),
@@ -7042,7 +7498,15 @@ fn main() {
             list_extensions,
             set_extension_enabled,
             reload_extensions,
-            open_extensions_folder
+            open_extensions_folder,
+            scan_importable_extensions,
+            pick_extension_source,
+            import_extensions,
+            get_fdm_status,
+            set_fdm_enabled,
+            choose_fdm_path,
+            set_fdm_args,
+            send_test_link_to_fdm
         ])
         .setup(|app| {
             install_panic_hook(&app.handle());

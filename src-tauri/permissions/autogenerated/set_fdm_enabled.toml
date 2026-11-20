@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-fdm-enabled"
+description = "Enables the set_fdm_enabled command without any pre-configured scope."
+commands.allow = ["set_fdm_enabled"]
+
+[[permission]]
+identifier = "deny-set-fdm-enabled"
+description = "Denies the set_fdm_enabled command without any pre-configured scope."
+commands.deny = ["set_fdm_enabled"]

@@ -1577,3 +1577,64 @@ body.private-active .shield-badge.site-off {
                            token for a filled accent button anywhere else
                            in this file to reuse. */
 }
+
+/* --- Extension import + Free Download Manager settings --- */
+
+.ext-import,
+.settings-fdm {
+  margin-top: 12px;
+}
+
+.ext-import-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 8px;
+}
+
+.ext-import-panel[hidden] {
+  display: none;
+}
+
+.ext-import-results:empty {
+  display: none;
+}
+
+.ext-badge {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--toolbar-border);
+}
+
+.ext-warnings {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ext-warnings summary {
+  cursor: pointer;
+}
+
+.ext-warnings ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.ext-result-error {
+  color: var(--danger);
+}
+
+.settings-fdm-advanced {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.settings-fdm-advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+}

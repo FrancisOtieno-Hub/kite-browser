@@ -1,6 +1,6 @@
 [package]
 name = "kite-browser"
-version = "0.1.2"
+version = "0.1.3"
 description = "Kite - a fast, low-memory browser shell"
 edition = "2021"
 
@@ -37,6 +37,9 @@ argon2 = "0.5"
 aes-gcm = "0.10"
 rand = "0.8"
 zeroize = "1"
+# Reads .crx/.xpi/.zip packages for the Chrome/Firefox extension importer
+# (ext_import.rs). Pure-Rust deflate only - no native zlib to build.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

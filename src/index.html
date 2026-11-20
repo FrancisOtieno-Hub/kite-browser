@@ -331,6 +331,38 @@
               <input type="text" id="settings-downloads-path" class="settings-text-input" readonly placeholder="Default Downloads folder" />
               <button id="settings-choose-downloads-btn" class="library-item-action">Change&hellip;</button>
             </div>
+
+            <div class="settings-fdm">
+              <label class="settings-radio">
+                <input type="checkbox" id="settings-fdm-enabled" />
+                Send downloads to Free Download Manager
+              </label>
+              <p class="settings-section-desc" id="settings-fdm-status">Checking for Free Download Manager&hellip;</p>
+              <p class="settings-section-desc">
+                Downloads from sites that need you to be signed in may fail
+                there, because Free Download Manager doesn't share Kite's
+                login. Private tabs always download in Kite. You can also
+                right-click any link and pick &ldquo;Download Link with Free
+                Download Manager&rdquo;.
+              </p>
+              <div class="settings-path-row">
+                <button id="settings-fdm-locate-btn" class="library-item-action">Locate fdm.exe&hellip;</button>
+                <button id="settings-fdm-test-btn" class="library-item-action">Send a test link</button>
+              </div>
+              <p class="settings-status-text" id="settings-fdm-message"></p>
+              <details class="settings-fdm-advanced">
+                <summary>Advanced</summary>
+                <p class="settings-section-desc">
+                  Arguments passed to fdm.exe; <code>{url}</code> is replaced
+                  with the link. If &ldquo;Send a test link&rdquo; doesn't make
+                  Free Download Manager react, this is the setting to adjust.
+                </p>
+                <div class="settings-path-row">
+                  <input type="text" id="settings-fdm-args" class="settings-text-input" spellcheck="false" autocomplete="off" />
+                  <button id="settings-fdm-args-save-btn" class="library-item-action">Save</button>
+                </div>
+              </details>
+            </div>
           </section>
 
           <section class="settings-section">
@@ -399,6 +431,30 @@
                 <button id="extensions-reload-btn" class="library-item-action">Reload extensions</button>
                 <button id="extensions-open-folder-btn" class="library-item-action">Open extensions folder</button>
               </div>
+            </div>
+            <div class="ext-import">
+              <p class="settings-section-desc">
+                Bring in extensions from Chrome, Edge, Brave, Vivaldi or
+                Firefox, or from a <code>.crx</code> / <code>.xpi</code>
+                file. Only an extension's page scripts and styles carry
+                over &mdash; background scripts, toolbar popups and the
+                browser's extension APIs don't, and each import lists what
+                was left out. Imported extensions start disabled.
+              </p>
+              <div class="library-header-row">
+                <button id="ext-import-browser-btn" class="library-item-action">Find in my browsers&hellip;</button>
+                <button id="ext-import-file-btn" class="library-item-action">Import .crx / .xpi / .zip&hellip;</button>
+                <button id="ext-import-folder-btn" class="library-item-action">Import folder&hellip;</button>
+              </div>
+              <div class="ext-import-panel" id="ext-import-panel" hidden>
+                <p class="settings-status-text" id="ext-import-status"></p>
+                <ul class="library-list" id="ext-import-candidates"></ul>
+                <div class="library-header-row">
+                  <button id="ext-import-selected-btn" class="library-item-action" disabled>Import selected</button>
+                  <button id="ext-import-close-btn" class="library-item-action">Close</button>
+                </div>
+              </div>
+              <ul class="library-list ext-import-results" id="ext-import-results"></ul>
             </div>
             <ul class="library-list" id="extensions-list"></ul>
             <p class="library-empty" id="extensions-empty">No extensions installed yet.</p>
