@@ -18,12 +18,15 @@ Built with [Tauri v2](https://tauri.app) (Rust backend + HTML/CSS/JS chrome), re
 - **Homepage** (`kite://home`) — search bar, photo background, persistent bookmarks bar
 - **Content blocking** — a 97,000+ domain blocklist, refreshable, with per-site allow toggle
 - **Extensions** (`kite://settings` → Extensions) — seven built-in, opt-in extensions: Dark Mode, Cosmetic Ad Blocking, SponsorBlock, YouTube Video Ad Blocking, Volume Booster (up to 500%, per-origin), Reader Mode, and Vimium-style Keyboard Navigation. Nothing runs until you enable it.
+- **Chrome/Firefox extension import** (Extensions → *Find in my browsers…*, or import a `.crx` / `.xpi` / `.zip` / unpacked folder) — carries over an extension's page scripts and styles (its `content_scripts`) into Kite's own extension system. Imported extensions start disabled. Background scripts, toolbar popups, options pages and the `chrome.*` / `browser.*` APIs are **not** supported; each import lists what was left out, and extensions that work only through those (most ad blockers, password managers) have nothing to import.
+- **Free Download Manager integration** (Settings → Downloads) — optionally hand browser downloads to a locally installed Free Download Manager, or send a single link from the right-click menu. Private tabs never hand off, and if Free Download Manager can't be started the download simply happens in Kite. Sites that need you to be signed in may not download in Free Download Manager, which doesn't share Kite's session.
 - **Password vault** — Argon2id + AES-GCM encrypted, one master password, save & autofill for logins, addresses, and payment cards, no third-party extension needed
 - **Own-cloud sync** — encrypts bookmarks, history, and settings with your vault's master password and syncs them through a folder your own cloud provider (Dropbox, Drive, OneDrive, Nextcloud, etc.) already keeps in sync — no Kite-run server involved
 - **Per-site permission memory** — camera, microphone, location, and notification decisions are remembered per site, so you're not asked twice
 - **Genuine private tabs** — real cookie/cache isolation via the OS's own incognito profile, not just a UI label
 - **Find-in-page & zoom** — Ctrl+F, Ctrl+/-/0, tracked per tab
 - **Context menu** — links, images, selection, with native image actions (Open in New Tab, Save As, Copy, Copy Address)
+- **Links that open in a new window** — `target="_blank"` links and `window.open()` (e.g. source links in Google's AI Overview) open as a new tab instead of being silently dropped (including the common "open a blank window, set its address afterwards" pattern)
 - **Downloads** — intercepted into your OS Downloads folder, collision-avoided naming, library panel UI
 - **Settings** (`kite://settings`) — search engine, tab bar position, homepage/startup behavior, downloads location, clear browsing data
 - **Crash recovery** — a tab whose content crashes shows a recovery page instead of going dead (Windows, via WebView2's `ProcessFailed` event)
@@ -60,8 +63,7 @@ npm run tauri build
 ## Roadmap
 
 - Cross-platform support (macOS/Linux) — scoping is done; implementation is blocked on access to non-Windows hardware
-- Chrome/Firefox extension import
-- Free Download Manager integration
+- Fuller extension compatibility (a `chrome.*` API bridge and background pages) — import currently covers page scripts and styles only
 - Built-in translation
 - Fingerprinting resistance toggle
 - Picture-in-picture as a toolbar button

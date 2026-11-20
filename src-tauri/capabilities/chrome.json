@@ -86,6 +86,14 @@
     "allow-list-extensions",
     "allow-set-extension-enabled",
     "allow-reload-extensions",
-    "allow-open-extensions-folder"
+    "allow-open-extensions-folder",
+    "allow-scan-importable-extensions",
+    "allow-pick-extension-source",
+    "allow-import-extensions",
+    "allow-get-fdm-status",
+    "allow-set-fdm-enabled",
+    "allow-choose-fdm-path",
+    "allow-set-fdm-args",
+    "allow-send-test-link-to-fdm"
   ]
 }

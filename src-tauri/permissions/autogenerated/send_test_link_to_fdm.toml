@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-send-test-link-to-fdm"
+description = "Enables the send_test_link_to_fdm command without any pre-configured scope."
+commands.allow = ["send_test_link_to_fdm"]
+
+[[permission]]
+identifier = "deny-send-test-link-to-fdm"
+description = "Denies the send_test_link_to_fdm command without any pre-configured scope."
+commands.deny = ["send_test_link_to_fdm"]

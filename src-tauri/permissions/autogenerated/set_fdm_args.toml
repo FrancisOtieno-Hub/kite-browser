@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-fdm-args"
+description = "Enables the set_fdm_args command without any pre-configured scope."
+commands.allow = ["set_fdm_args"]
+
+[[permission]]
+identifier = "deny-set-fdm-args"
+description = "Denies the set_fdm_args command without any pre-configured scope."
+commands.deny = ["set_fdm_args"]
